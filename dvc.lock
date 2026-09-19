@@ -1,0 +1,34 @@
+schema: '2.0'
+stages:
+  train:
+    cmd: python -m hotelprice.train
+    deps:
+    - path: data/dataset.csv
+      hash: md5
+      md5: b96052c30e8dcb930d530787f066685c
+      size: 155401
+    - path: src/hotelprice/config.py
+      hash: md5
+      md5: e23da1f7b2d7598f5d8a0643a1caae98
+      size: 1850
+    - path: src/hotelprice/data_pipeline.py
+      hash: md5
+      md5: 979572bf0ebe05a7fe5c44e3cd00f14b
+      size: 2234
+    - path: src/hotelprice/train.py
+      hash: md5
+      md5: 446574d5a3c40f029789299680ac3344
+      size: 1770
+    outs:
+    - path: models/metrics.json
+      hash: md5
+      md5: 445f313acfb86ddcd1eb463e8116a089
+      size: 87
+    - path: models/model.json
+      hash: md5
+      md5: 10f66e0d7e8e783cce7ffb23689231e5
+      size: 937465
+    - path: models/preprocessor.joblib
+      hash: md5
+      md5: 880f98713c1819cc23c4db27338d4d5c
+      size: 4025

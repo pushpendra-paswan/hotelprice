@@ -24,7 +24,9 @@ env/
 .ipynb_checkpoints/
 
 # ML artifacts (models, MLflow, BentoML)
-models/
+# models/ is DVC-tracked, except metrics.json which stays in Git
+models/*
+!models/metrics.json
 artifacts/
 mlruns/
 mlartifacts/
@@ -34,7 +36,7 @@ mlflow.db
 *.ubj
 bentoml/
 
-# DVC (local cache and config; dataset itself is not ignored yet)
+# DVC (local cache and config)
 /.dvc/cache
 /.dvc/tmp
 /.dvc/config.local

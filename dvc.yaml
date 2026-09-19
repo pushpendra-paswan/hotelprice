@@ -1,0 +1,14 @@
+stages:
+  train:
+    cmd: python -m hotelprice.train
+    deps:
+      - data/dataset.csv
+      - src/hotelprice/config.py
+      - src/hotelprice/data_pipeline.py
+      - src/hotelprice/train.py
+    outs:
+      - models/model.json
+      - models/preprocessor.joblib
+    metrics:
+      - models/metrics.json:
+          cache: false
