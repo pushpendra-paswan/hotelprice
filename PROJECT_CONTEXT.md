@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality)
 - **In progress:** none
-- **Next:** Milestone 2.1 (Git workflow and project quality)
+- **Next:** Milestone 2.2 (DVC dataset versioning)
 
 ## Completed Milestones
 
@@ -29,6 +29,15 @@ Source of truth for the current project state. Update after every milestone.
 - Artifacts in `models/` (git-ignored): `model.json` (native XGBoost format), `preprocessor.joblib` (same fitted preprocessor), `metrics.json` (`mae`, `rmse`, `r2`).
 - `tests/test_train.py`: 4 tests on a small in-memory sample (artifacts created, metrics finite and match the JSON, saved model + preprocessor predict from raw rows, training is reproducible). The `sample_csv` fixture moved from `test_data_pipeline.py` to `tests/conftest.py` so both test files share it.
 - No tuning, cross-validation, extra models, feature engineering, MLflow, BentoML, Docker, DVC, or CI/CD.
+
+### 2.1 Git & Project Quality
+- **Repo review:** layout is consistent (`src/hotelprice/`, `tests/`, `data/`, `config/`, `pipelines/`); no reorganization was needed.
+- **`.gitignore` review:** already covered caches, `.venv/`, `models/`, `artifacts/`, `*.joblib`, `mlruns/`, `mlflow.db`, `bentoml/`, `.env`/`.env.*` (except `.env.example`), and `.ruff_cache/`. No change was needed. `git ls-files` showed only source, tests, config placeholders, docs and `data/dataset.csv` (still tracked until 2.2), so nothing had to be removed from the index.
+- **Ruff** added as a dev dependency only (`ruff>=0.6`; 0.16.8 was installed). Config in `pyproject.toml`: `line-length = 100`, rules `E, F, I, UP, B`. It reported two over-long lines (`config.py`, `tests/test_train.py`); `ruff format` fixed both. No logic changed.
+- **README** now has a Development section (install, test, lint/format check, apply fixes, train) and a Configuration section.
+- **`.env.example`** lists the five `HOTELPRICE_*` variables read by `config.py`, with their defaults. The code reads `os.environ` only and does not load `.env` files (no python-dotenv, per the dependency rule), so variables must be exported in the shell.
+- **Commits:** two focused commits (`Add Ruff for linting and formatting`, `Document development commands and add .env.example`) plus this context update. Nothing was pushed.
+- No DVC, MLflow, BentoML, Docker or CI/CD.
 
 ## Architecture
 
@@ -66,7 +75,8 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 ├── tests/test_data_pipeline.py  # data pipeline tests
 ├── tests/test_train.py      # training tests (small sample)
 ├── tests/conftest.py        # shared small-sample CSV fixture
-├── pyproject.toml
+├── .env.example             # optional HOTELPRICE_* overrides with defaults
+├── pyproject.toml           # dependencies, pytest and ruff config
 ├── README.md
 ├── PROJECT_CONTEXT.md
 ├── CLAUDE.md
@@ -114,6 +124,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 - Python 3.12.3 (project requires >=3.10).
 - Resolved versions in the verified environment: pandas 3.0.6, numpy 2.5.3, scikit-learn 1.9.1, xgboost 3.4.1, pytest 9.1.1.
 - pytest: `testpaths = ["tests"]` in `pyproject.toml`.
+- Ruff: `line-length = 100`, lint rules `E, F, I, UP, B`, `src = ["src", "tests"]` in `pyproject.toml`.
 
 ## Commands
 
@@ -121,6 +132,11 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest
+
+# Lint and format (ruff)
+ruff check .
+ruff format --check .
+ruff check --fix . && ruff format .   # apply fixes
 
 # Run the data pipeline on the real dataset (also saves artifacts/preprocessor.joblib)
 python -m hotelprice.data_pipeline
@@ -162,6 +178,12 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - `models/model.json`, `models/preprocessor.joblib`, `models/metrics.json` were created; `git status` shows `models/` is not tracked.
 - Reproducibility is covered by a test (two runs give identical metrics).
 
+## Verification Results (Milestone 2.1)
+
+- `ruff check .` passes and `ruff format --check .` reports all 11 files formatted.
+- `pytest`: 11 passed in the working tree.
+- **Clean clone:** `git clone` into a temp directory, fresh venv, `pip install -e ".[dev]"`, then `pip check` (no broken requirements), `pytest` (11 passed), ruff check/format (clean), and `python -m hotelprice.train` all succeeded with no fixes needed. Metrics were identical to Milestone 1.2 (MAE 387.36, RMSE 495.51, R² 0.9772), `models/` contained `model.json`, `preprocessor.joblib` and `metrics.json`, and `git status` in the clone stayed clean. The temp clone was deleted afterwards.
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
@@ -174,4 +196,4 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 
 ## Next Milestone
 
-**2.1 Git workflow and project quality**: branching/commit conventions and code-quality tooling, per the milestone prompt.
+**2.2 DVC dataset versioning**: track `data/dataset.csv` with local DVC and stop tracking the CSV in Git, per the milestone prompt.
