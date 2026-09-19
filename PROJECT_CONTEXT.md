@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation)
 - **In progress:** none
-- **Next:** Milestone 1.2 (XGBoost training and evaluation pipeline)
+- **Next:** Milestone 2.1 (Git workflow and project quality)
 
 ## Completed Milestones
 
@@ -23,6 +23,13 @@ Source of truth for the current project state. Update after every milestone.
 - **Refactor (same milestone):** the earlier `data.py`/`features.py` split (`load_data`, `split_data`, `prepare_data`, `select_features`, `build_preprocessor`, `PreparedData`) was collapsed into `data_pipeline.py`. Behavior is unchanged (same split indices and encoding).
 - Nothing was added to the dependencies (`joblib` ships with scikit-learn). No model training, MLflow, BentoML, Docker, DVC, or CI/CD code.
 
+### 1.2 XGBoost Training & Evaluation Pipeline
+- `src/hotelprice/train.py`: a single function, `run_training()`, as plain sequential steps (call `run_data_pipeline()` → fit `XGBRegressor(**XGB_PARAMS, random_state=seed)` → predict on test → MAE/RMSE/R² with scikit-learn → save artifacts). Runnable with `python -m hotelprice.train`, which prints the metrics.
+- `config.py` gained `XGB_PARAMS` (hyperparameters), `get_model_dir()` (env `HOTELPRICE_MODEL_DIR`, default `models/`). The existing `get_random_seed()` (default 42) seeds both the split and the model.
+- Artifacts in `models/` (git-ignored): `model.json` (native XGBoost format), `preprocessor.joblib` (same fitted preprocessor), `metrics.json` (`mae`, `rmse`, `r2`).
+- `tests/test_train.py`: 4 tests on a small in-memory sample (artifacts created, metrics finite and match the JSON, saved model + preprocessor predict from raw rows, training is reproducible). The `sample_csv` fixture moved from `test_data_pipeline.py` to `tests/conftest.py` so both test files share it.
+- No tuning, cross-validation, extra models, feature engineering, MLflow, BentoML, Docker, DVC, or CI/CD.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -34,11 +41,13 @@ Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
 Git → GitHub → GitHub Actions
 ```
 
-Implemented so far: Dataset → Data/Feature Pipeline (`run_data_pipeline`). Data flow:
+Implemented so far: Dataset → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`). Data flow:
 
 ```text
 data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit(train) → transform(train, test)
                                                         └→ artifacts/preprocessor.joblib
+                                                        → XGBRegressor.fit → predict(test) → MAE/RMSE/R²
+                                                        └→ models/{model.json, preprocessor.joblib, metrics.json}
 ```
 
 ## Repository Structure
@@ -48,11 +57,15 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 ├── data/dataset.csv         # existing dataset, 2,000 rows, read-only
 ├── src/hotelprice/          # Python package
 │   ├── config.py            # column lists + env-driven settings
-│   └── data_pipeline.py     # run_data_pipeline(): load, split, preprocess, save
+│   ├── data_pipeline.py     # run_data_pipeline(): load, split, preprocess, save
+│   └── train.py             # run_training(): train, evaluate, save model + metrics
+├── models/                  # training output (git-ignored, created by train)
 ├── pipelines/               # empty (.gitkeep); ML pipeline entry points
 ├── config/                  # empty (.gitkeep); configuration files
 ├── tests/test_smoke.py      # package import + dataset schema tests
 ├── tests/test_data_pipeline.py  # data pipeline tests
+├── tests/test_train.py      # training tests (small sample)
+├── tests/conftest.py        # shared small-sample CSV fixture
 ├── pyproject.toml
 ├── README.md
 ├── PROJECT_CONTEXT.md
@@ -78,6 +91,11 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 - `hotel` and `city` are independent columns (each hotel appears in several cities), so both are kept.
 
 ## Important Decisions
+
+- **Training hyperparameters** (`XGB_PARAMS`): `n_estimators=300, learning_rate=0.05, max_depth=5, subsample=0.8, colsample_bytree=0.8, n_jobs=1`, seed 42. Fixed values, not tuned. `n_jobs=1` keeps runs deterministic.
+- **Model saved as XGBoost JSON** (`model.save_model`) rather than pickle, so it is portable across versions; the preprocessor is saved with joblib. Both live in `models/` so inference needs only that directory.
+- **RMSE is `sqrt(mean_squared_error)`** (works across scikit-learn versions).
+- `run_data_pipeline()` still writes `artifacts/preprocessor.joblib` as before; training saves a second copy in `models/`, which is the one to load for inference.
 
 - **Ordinal encoding for categoricals** (`OrdinalEncoder`), numerics passed through unscaled. XGBoost is tree-based, so scaling is unnecessary, and the low cardinality (max 7) makes integer codes cheap and adequate. This avoids one-hot column growth and keeps feature names identical to the raw columns.
 - **Unseen categories at inference encode to NaN** (`handle_unknown="use_encoded_value", unknown_value=np.nan`), which XGBoost treats as missing, so serving does not crash on new values.
@@ -107,8 +125,12 @@ pytest
 # Run the data pipeline on the real dataset (also saves artifacts/preprocessor.joblib)
 python -m hotelprice.data_pipeline
 
+# Train and evaluate on the real dataset (saves models/model.json, preprocessor.joblib, metrics.json)
+python -m hotelprice.train
+
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
+# Training output dir: HOTELPRICE_MODEL_DIR=/tmp/models python -m hotelprice.train
 ```
 
 ## Verification Results (Milestone 0.1)
@@ -126,15 +148,30 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - The loaded joblib preprocessor reproduces the training features exactly and encodes an unseen category as NaN (tested).
 - `xgboost.DMatrix(X_train, label=y_train)` built from the prepared data before the refactor (input format accepted; no model was trained).
 
+## Verification Results (Milestone 1.2)
+
+- `pytest`: 11 passed (2 smoke + 5 data pipeline + 4 training).
+- `python -m hotelprice.train` on the real dataset (1,600 train / 400 test, seed 42):
+
+  | Metric | Test value |
+  |--------|-----------|
+  | MAE    | 387.36 |
+  | RMSE   | 495.51 |
+  | R²     | 0.9772 |
+
+- `models/model.json`, `models/preprocessor.joblib`, `models/metrics.json` were created; `git status` shows `models/` is not tracked.
+- Reproducibility is covered by a test (two runs give identical metrics).
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
 - `pipelines/` and `config/` are placeholders; settings currently live in `src/hotelprice/config.py` and env vars.
 - The preprocessor is saved locally only; logging/registering it with the model is left to the MLflow milestones.
+- Metrics are from a single train/test split with untuned hyperparameters; no cross-validation. The test set is not used for model selection.
 - `run_data_pipeline()` writes the preprocessor file on every call, so it has a side effect (tests redirect it to a temp path).
 - `test_real_dataset` reads the real dataset (or `HOTELPRICE_DATA_PATH`) and expects 2,000 rows at the default 0.2 split.
 - The dataset had to be sourced from outside the repo (see Dataset). If a different canonical dataset exists, replace it deliberately.
 
 ## Next Milestone
 
-**1.2 XGBoost training and evaluation pipeline**: train an `XGBRegressor` on `run_data_pipeline()` output with a fixed seed, evaluate MAE, RMSE, and R² on the test split, and expose a simple training entry point (no MLflow yet).
+**2.1 Git workflow and project quality**: branching/commit conventions and code-quality tooling, per the milestone prompt.

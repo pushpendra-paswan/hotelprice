@@ -40,7 +40,7 @@ Only the ML libraries and pytest are installed at this stage. The other tools ar
 ```text
 .
 ├── data/                # Dataset (dataset.csv)
-├── src/hotelprice/      # Python package: data, features, training code
+├── src/hotelprice/      # Python package: config, data pipeline, training
 ├── pipelines/           # ML pipeline entry points (training, evaluation)
 ├── config/              # Configuration files
 ├── tests/               # pytest tests
@@ -64,6 +64,14 @@ Run the tests:
 ```bash
 pytest
 ```
+
+Train and evaluate the model on the real dataset:
+
+```bash
+python -m hotelprice.train
+```
+
+This prints MAE, RMSE and R² on the test split and saves `model.json`, `preprocessor.joblib` and `metrics.json` to `models/` (git-ignored; override with `HOTELPRICE_MODEL_DIR`).
 
 ## Roadmap
 
