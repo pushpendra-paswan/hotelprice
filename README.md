@@ -40,7 +40,7 @@ Only the ML libraries, DVC, MLflow, pytest and Ruff (dev) are installed at this 
 ```text
 .
 ├── data/                # Dataset (dataset.csv is DVC-tracked; dataset.csv.dvc is in Git)
-├── src/hotelprice/      # Python package: config, data pipeline, training, model selection
+├── src/hotelprice/      # Python package: config, data pipeline, training, model selection, BentoML service
 ├── pipelines/           # ML pipeline entry points (training, evaluation)
 ├── config/              # Configuration files
 ├── tests/               # pytest tests
@@ -128,7 +128,7 @@ python -m hotelprice.select_model
 
 The registry and its aliases are also visible in the MLflow UI under the **Models** tab.
 
-Load the champion model and its matching preprocessor (needed together by the BentoML service in the next milestone):
+Load the champion model and its matching preprocessor (the BentoML service below loads them the same way):
 
 ```python
 import joblib, mlflow, mlflow.xgboost, pandas as pd
@@ -152,6 +152,37 @@ predictions = model.predict(preprocessor.transform(raw_rows[FEATURES]))
 ```
 
 The registered name is set with `HOTELPRICE_MLFLOW_MODEL_NAME` (default `hotel-price-model`).
+
+### Serving (BentoML)
+
+`src/hotelprice/service.py` is a single-file BentoML service. At startup it loads the `champion` model from the MLflow Model Registry (`models:/<name>@champion`) and the fitted preprocessor logged with that model version's run, then serves one prediction endpoint. It fails at startup with a clear error if the alias, model or preprocessor is missing.
+
+**A champion model must exist before serving:** train, then select a version.
+
+```bash
+python -m hotelprice.train             # registers a new model version
+python -m hotelprice.select_model      # sets the "champion" alias (latest version, or pass a number)
+bentoml serve hotelprice.service:HotelPriceService    # http://localhost:3000
+```
+
+Environment variables (all optional, see `.env.example`): `HOTELPRICE_MLFLOW_TRACKING_URI` (default: the repo's `mlflow.db`) and `HOTELPRICE_MLFLOW_MODEL_NAME` (default `hotel-price-model`). The service reads the local MLflow store, so it must run where that store and its artifacts exist.
+
+Example request (a row from the dataset; all 11 feature fields are required):
+
+```bash
+curl -X POST http://localhost:3000/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"hotel": "The Meridian", "city": "Bengaluru", "room_type": "Standard",
+       "season": "Shoulder", "day_of_week": "Wednesday", "is_holiday": 0, "is_weekend": 0,
+       "occupancy": 10.0, "demand": 45.96, "booking_lead_time_days": 16,
+       "competitor_price": 6791.59}'
+```
+
+```json
+{"predicted_room_price": 5867.1142578125, "model_version": "2"}
+```
+
+Unknown categories (e.g. a new hotel name) are accepted and encoded as missing by the preprocessor. A missing field or wrong type returns HTTP 400 with the validation details. Health endpoints: `GET /livez` and `GET /readyz`.
 
 ### Data versioning and pipeline (DVC)
 

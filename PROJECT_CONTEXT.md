@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry), 4.1 (BentoML service)
 - **In progress:** none
-- **Next:** Milestone 4.1 (BentoML service)
+- **Next:** Milestone 4.2 (Dockerize the BentoML service)
 
 ## Completed Milestones
 
@@ -75,6 +75,18 @@ Source of truth for the current project state. Update after every milestone.
 - **README:** new "Model Registry (MLflow)" section (register, select, load champion + preprocessor, env var).
 - No BentoML, Docker or CI/CD.
 
+### 4.1 BentoML Service
+- **BentoML 1.4.39** added to `[project.dependencies]` (`bentoml>=1.4`). **No version conflicts:** the install changed no existing package (pydantic stays 2.13.5, MLflow 3.16.1); `pip check` is clean. FastAPI is present only as a pre-existing transitive dependency of MLflow; the code does not import it and BentoML is the serving layer.
+- **`src/hotelprice/service.py`** (the only new source file, single file, no helper functions): the `HotelPriceRequest` and `HotelPriceResponse` pydantic models plus one `@bentoml.service` class, `HotelPriceService`. Run: `bentoml serve hotelprice.service:HotelPriceService` (port 3000).
+- **Startup (`__init__`, once):** set the tracking URI (`get_mlflow_tracking_uri()`) → `get_model_version_by_alias(name, "champion")` → `mlflow.xgboost.load_model("models:/<name>@champion")` → download `runs:/<version.run_id>/preprocessor/preprocessor.joblib` into a temp dir and `joblib.load` it. Each step raises `RuntimeError` with a clear message (alias missing → tells the user to run `train` then `select_model`; model or preprocessor unloadable → names the model version/run). Name and URI come from the existing `HOTELPRICE_MLFLOW_MODEL_NAME` / `HOTELPRICE_MLFLOW_TRACKING_URI`; no new variables.
+- **Request** (`POST /predict`, JSON body, one field per feature in `config.FEATURES` order; a test asserts the field list equals `FEATURES`): strings `hotel, city, room_type, season, day_of_week`; ints `is_holiday, is_weekend, booking_lead_time_days`; floats `occupancy, demand, competitor_price`. All required.
+- **Response:** `{"predicted_room_price": <float>, "model_version": "<registered version>"}`.
+- **Endpoint** (`@bentoml.api(input_spec=HotelPriceRequest)`, so fields arrive as kwargs): builds a one-row DataFrame in `FEATURES` order → `preprocessor.transform` → `model.predict` → float. No preprocessing is re-implemented; unseen categories become NaN in the saved preprocessor.
+- **Validation errors return HTTP 400** (BentoML's behavior, not 422) with pydantic details.
+- **Tests** (`tests/test_service.py`, 5 tests, temp SQLite MLflow store under `tmp_path`, one training run per test): request fields equal `FEATURES`; service loads the champion (version, model, preprocessor); valid request returns a float and an unseen category does not crash; over HTTP (`starlette.testclient.TestClient(HotelPriceService.to_asgi())`) a valid request returns 200 and a missing field / wrong type return 400 while `/livez` stays 200; missing champion alias raises a `RuntimeError` mentioning `select_model`. Tests call the service class through `HotelPriceService.inner()`.
+- **README:** new "Serving (BentoML)" section (serve command, env vars, champion prerequisite, curl request/response, error behavior, health endpoints).
+- No Bento build, Docker, authentication, batching, caching, monitoring or extra endpoints. Training, MLflow logging and DVC are unchanged.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -86,7 +98,7 @@ Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
 Git → GitHub → GitHub Actions
 ```
 
-Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking + Model Registry (inside `run_training`; `select_model` sets the alias), wired together by the DVC `train` stage. Data flow:
+Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking + Model Registry (inside `run_training`; `select_model` sets the alias), wired together by the DVC `train` stage, then BentoML (`service.py`) loading the champion from the registry. Data flow:
 
 ```text
 data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit(train) → transform(train, test)
@@ -94,6 +106,8 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
                                                         → XGBRegressor.fit → predict(test) → MAE/RMSE/R²
                                                         ├→ models/{model.json, preprocessor.joblib, metrics.json}
                                                         └→ MLflow run (mlflow.db + mlartifacts/): params, metrics, tags, model, preprocessor
+
+models:/<name>@champion + runs:/<champion run_id>/preprocessor → BentoML service (startup) → POST /predict
 ```
 
 ## Repository Structure
@@ -108,7 +122,8 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 │   ├── config.py            # column lists + env-driven settings
 │   ├── data_pipeline.py     # run_data_pipeline(): load, split, preprocess, save
 │   ├── train.py             # run_training(): train, evaluate, save model + metrics, log + register in MLflow
-│   └── select_model.py      # script: list registered versions, set the "champion" alias
+│   ├── select_model.py      # script: list registered versions, set the "champion" alias
+│   └── service.py           # BentoML service: loads champion model + preprocessor, POST /predict
 ├── mlflow.db, mlartifacts/  # local MLflow store (git-ignored, created on first run)
 ├── models/                  # training output; model/preprocessor DVC-cached, metrics.json in Git
 ├── pipelines/               # empty (.gitkeep); ML pipeline entry points
@@ -117,6 +132,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 ├── tests/test_data_pipeline.py  # data pipeline tests
 ├── tests/test_train.py      # training, MLflow and registration tests (small sample)
 ├── tests/test_select_model.py  # alias selection tests
+├── tests/test_service.py    # BentoML service tests (temp MLflow store)
 ├── tests/conftest.py        # shared small-sample CSV fixture
 ├── .env.example             # optional HOTELPRICE_* overrides (incl. MLflow) with defaults
 ├── pyproject.toml           # dependencies, pytest and ruff config
@@ -170,6 +186,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 - pytest: `testpaths = ["tests"]` in `pyproject.toml`.
 - DVC 3.67.1: one default remote `localstorage` (directory outside the repo, set in git-ignored `.dvc/config.local`); `core.analytics = false`.
 - MLflow 3.16.1: tracking URI `sqlite:///<repo>/mlflow.db`, artifacts in `<repo>/mlartifacts`, experiment `hotel-price-prediction` (all overridable, see `.env.example`). Resolved versions otherwise unchanged; `pip check` clean.
+- BentoML 1.4.39 (pydantic 2.13.5, unchanged); service on port 3000 by default; reads the same `HOTELPRICE_MLFLOW_TRACKING_URI` / `HOTELPRICE_MLFLOW_MODEL_NAME` as training.
 - Ruff: `line-length = 100`, lint rules `E, F, I, UP, B`, `src = ["src", "tests"]` in `pyproject.toml`.
 
 ## Commands
@@ -207,6 +224,11 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db
 # Model Registry: each training run registers a new version; set the champion alias
 python -m hotelprice.select_model 2   # alias on version 2 (no argument = latest version)
 # Load: mlflow.xgboost.load_model("models:/hotel-price-model@champion"); preprocessor via the version's run_id
+
+# Serve (needs a champion: train, then select_model). Health: /livez, /readyz
+bentoml serve hotelprice.service:HotelPriceService
+curl -X POST http://localhost:3000/predict -H 'Content-Type: application/json' \
+  -d '{"hotel":"The Meridian","city":"Bengaluru","room_type":"Standard","season":"Shoulder","day_of_week":"Wednesday","is_holiday":0,"is_weekend":0,"occupancy":10.0,"demand":45.96,"booking_lead_time_days":16,"competitor_price":6791.59}'
 
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
@@ -283,6 +305,14 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - **MLflow UI:** `mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000` served HTTP 200; the registered-models and model-versions REST endpoints returned `hotel-price-model` with alias `champion` → version 2 and versions 1 and 2, each with its run ID. Checked through the API, not by looking at the pages in a browser. The UI process was stopped.
 - `git status`: `mlflow.db` and `mlartifacts/` are ignored; changes are `.env.example`, `dvc.lock`, `config.py`, `train.py`, `select_model.py`, the tests, README and this file.
 
+## Verification Results (Milestone 4.1)
+
+- `ruff check .` and `ruff format .` clean. `pytest`: 21 passed (16 previous + 5 new, about 70 s). `dvc repro`: stage `train` unchanged, skipped. `pip check` clean after installing BentoML.
+- **`bentoml serve hotelprice.service:HotelPriceService`** against the real `mlflow.db` (champion = version 2): `/livez` and `/readyz` returned 200; the service log showed "Service HotelPriceService initialized".
+- **Served vs direct** (dataset rows 0, 500, 1500, sent with `requests`): served predictions 5867.1142578125, 8568.1923828125, 7092.30712890625 were **exactly equal** to the champion model + its run's preprocessor loaded directly in Python (actual prices 5743.83, 8710.88, 6874.36). Each response reported `model_version` "2".
+- **Invalid requests:** `{"hotel":"Taj"}` → HTTP 400 listing the 10 missing fields; `occupancy: "high"` → HTTP 400 (`float_parsing`). `/livez` still 200 afterwards. A request with unseen hotel/city returned 200 with a price.
+- The server was stopped after the check.
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
@@ -304,6 +334,11 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - `dvc gc` deletes cached objects not referenced by the current workspace (`-w`) or other revisions; use it carefully once real history exists.
 - The dataset had to be sourced from outside the repo (see Dataset). If a different canonical dataset exists, replace it deliberately.
 
+- The service reads the **local** MLflow store (`mlflow.db` + `mlartifacts/`), and model artifact paths stored in the DB are absolute paths. It only works where the store and artifacts exist at the same paths.
+- The champion is resolved once at startup; moving the alias needs a service restart.
+- `bentoml serve` prints MLflow INFO lines and the agent hint at startup; the test run shows Pydantic/starlette deprecation warnings from BentoML internals.
+- Tests use `HotelPriceService.inner()` to get the plain class; this is BentoML SDK behavior that could change between versions.
+
 ## Next Milestone
 
-**4.1 BentoML service**: load the `champion` model from the MLflow registry and its preprocessor through the version's run ID, and serve predictions with BentoML (not FastAPI), per the milestone prompt.
+**4.2 Dockerize the BentoML service.** Note: the service currently loads from the local MLflow store (SQLite `mlflow.db` + `mlartifacts/` with absolute artifact paths), so containerization must make the champion model and its preprocessor available inside the image (for example by exporting them from the registry at build time or mounting the store), and decide how `HOTELPRICE_MLFLOW_TRACKING_URI` / the model name are set in the container.

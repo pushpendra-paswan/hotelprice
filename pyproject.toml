@@ -15,6 +15,7 @@ dependencies = [
     "xgboost>=2.0",
     "dvc>=3.0",
     "mlflow>=3.0",
+    "bentoml>=1.4",
 ]
 
 [project.optional-dependencies]
