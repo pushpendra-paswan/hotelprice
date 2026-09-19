@@ -40,7 +40,7 @@ Only the ML libraries, DVC, MLflow, pytest and Ruff (dev) are installed at this 
 ```text
 .
 ├── data/                # Dataset (dataset.csv is DVC-tracked; dataset.csv.dvc is in Git)
-├── src/hotelprice/      # Python package: config, data pipeline, training
+├── src/hotelprice/      # Python package: config, data pipeline, training, model selection
 ├── pipelines/           # ML pipeline entry points (training, evaluation)
 ├── config/              # Configuration files
 ├── tests/               # pytest tests
@@ -80,7 +80,7 @@ Training prints MAE, RMSE and R² on the test split and saves `model.json`, `pre
 
 ### Experiment tracking (MLflow)
 
-Every training run (`python -m hotelprice.train`, or the DVC `train` stage) is logged to a local MLflow tracking store: a SQLite database (`mlflow.db`) plus an artifact directory (`mlartifacts/`), both git-ignored. SQLite is used instead of the plain file store so the Model Registry works in the next milestone. Runs go to the experiment `hotel-price-prediction`.
+Every training run (`python -m hotelprice.train`, or the DVC `train` stage) is logged to a local MLflow tracking store: a SQLite database (`mlflow.db`) plus an artifact directory (`mlartifacts/`), both git-ignored. SQLite is used instead of the plain file store so the Model Registry works. Runs go to the experiment `hotel-price-prediction`.
 
 Each run logs:
 
@@ -104,11 +104,54 @@ Load a logged model back (replace `<run_id>` with a run ID from the UI):
 
 ```python
 import mlflow, mlflow.xgboost
+
 mlflow.set_tracking_uri("sqlite:///mlflow.db")
 model = mlflow.xgboost.load_model("runs:/<run_id>/model")
 ```
 
 MLflow settings (all optional): `HOTELPRICE_MLFLOW_TRACKING_URI` (default `sqlite:///<repo>/mlflow.db`), `HOTELPRICE_MLFLOW_ARTIFACT_DIR` (default `<repo>/mlartifacts`), `HOTELPRICE_MLFLOW_EXPERIMENT` (default `hotel-price-prediction`). The artifact directory only applies when the experiment is first created; an existing experiment keeps its original location. If you change the tracking URI, start the UI with the same `--backend-store-uri`.
+
+### Model Registry (MLflow)
+
+Every training run also registers its model in the MLflow Model Registry (same SQLite store) under the name `hotel-price-model`. Each run creates a new version linked to its run, so the run ID, metrics, params and the preprocessor artifact are reachable from the version. Versions are selected with **aliases** (not the deprecated Staging/Production stages): the alias `champion` marks the version to use.
+
+```bash
+# Register: every training run adds a new version
+python -m hotelprice.train
+
+# List versions (run ID, metrics, aliases) and set "champion" on version 2
+python -m hotelprice.select_model 2
+
+# No argument = the latest version
+python -m hotelprice.select_model
+```
+
+The registry and its aliases are also visible in the MLflow UI under the **Models** tab.
+
+Load the champion model and its matching preprocessor (needed together by the BentoML service in the next milestone):
+
+```python
+import joblib, mlflow, mlflow.xgboost, pandas as pd
+from hotelprice.config import FEATURES
+
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
+client = mlflow.MlflowClient()
+
+# Model: the alias URI always resolves to the currently selected version.
+model = mlflow.xgboost.load_model("models:/hotel-price-model@champion")
+
+# Preprocessor: resolve the champion version, then use its linked run ID.
+version = client.get_model_version_by_alias("hotel-price-model", "champion")
+path = mlflow.artifacts.download_artifacts(
+    f"runs:/{version.run_id}/preprocessor/preprocessor.joblib"
+)
+preprocessor = joblib.load(path)
+
+raw_rows = pd.read_csv("data/dataset.csv").head(3)
+predictions = model.predict(preprocessor.transform(raw_rows[FEATURES]))
+```
+
+The registered name is set with `HOTELPRICE_MLFLOW_MODEL_NAME` (default `hotel-price-model`).
 
 ### Data versioning and pipeline (DVC)
 
@@ -136,7 +179,7 @@ To change the dataset: edit it, run `dvc add data/dataset.csv`, then `git add da
 
 ### Configuration
 
-Settings are read from environment variables and all have defaults, so none are required. See `.env.example` for the list (`HOTELPRICE_DATA_PATH`, `HOTELPRICE_PREPROCESSOR_PATH`, `HOTELPRICE_MODEL_DIR`, `HOTELPRICE_TEST_SIZE`, `HOTELPRICE_RANDOM_SEED`, plus the three `HOTELPRICE_MLFLOW_*` variables above). The code does not load `.env` files itself; export the variables in your shell, e.g. `HOTELPRICE_RANDOM_SEED=1 python -m hotelprice.train`.
+Settings are read from environment variables and all have defaults, so none are required. See `.env.example` for the list (`HOTELPRICE_DATA_PATH`, `HOTELPRICE_PREPROCESSOR_PATH`, `HOTELPRICE_MODEL_DIR`, `HOTELPRICE_TEST_SIZE`, `HOTELPRICE_RANDOM_SEED`, plus the `HOTELPRICE_MLFLOW_*` variables above, including `HOTELPRICE_MLFLOW_MODEL_NAME`). The code does not load `.env` files itself; export the variables in your shell, e.g. `HOTELPRICE_RANDOM_SEED=1 python -m hotelprice.train`.
 
 ## Roadmap
 

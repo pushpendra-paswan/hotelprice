@@ -21,6 +21,7 @@ from hotelprice.config import (
     get_mlflow_tracking_uri,
     get_model_dir,
     get_random_seed,
+    get_registered_model_name,
     get_test_size,
 )
 from hotelprice.data_pipeline import run_data_pipeline
@@ -88,6 +89,8 @@ def run_training():
         experiment_id = experiment.experiment_id
 
     # 8. Log the run: parameters, metrics, tags, the XGBoost model and the fitted preprocessor.
+    #    Logging the model with registered_model_name also registers it in the Model Registry,
+    #    creating a new version linked to this run.
     with mlflow.start_run(experiment_id=experiment_id):
         mlflow.log_params(XGB_PARAMS)
         mlflow.log_param("random_seed", get_random_seed())
@@ -105,7 +108,9 @@ def run_training():
                 "git_commit": git_commit,
             }
         )
-        mlflow.xgboost.log_model(model, name="model")
+        mlflow.xgboost.log_model(
+            model, name="model", registered_model_name=get_registered_model_name()
+        )
         mlflow.log_artifact(str(model_dir / "preprocessor.joblib"), artifact_path="preprocessor")
 
     return metrics
@@ -120,3 +125,4 @@ if __name__ == "__main__":
     print(f"Artifacts saved to {get_model_dir()}")
     print(f"MLflow run logged to {get_mlflow_tracking_uri()}")
     print(f"MLflow experiment: {get_mlflow_experiment_name()}")
+    print(f"Registered model: {get_registered_model_name()} (new version created)")

@@ -9,16 +9,16 @@ stages:
       size: 155401
     - path: src/hotelprice/config.py
       hash: md5
-      md5: b2a472db36b8b2f305a0c0e79096fb05
-      size: 2563
+      md5: 0c6f35e36ebc5a9ab3a46e3769a31cb4
+      size: 2779
     - path: src/hotelprice/data_pipeline.py
       hash: md5
       md5: 979572bf0ebe05a7fe5c44e3cd00f14b
       size: 2234
     - path: src/hotelprice/train.py
       hash: md5
-      md5: 15612ab872d4a05eb60f6435fc0fde53
-      size: 4518
+      md5: 404a7920315a754149bf4d8767f79837
+      size: 4853
     outs:
     - path: models/metrics.json
       hash: md5

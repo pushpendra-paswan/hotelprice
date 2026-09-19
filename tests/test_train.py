@@ -24,6 +24,7 @@ def train_env(sample_csv, tmp_path, monkeypatch):
     monkeypatch.setenv("HOTELPRICE_MLFLOW_TRACKING_URI", f"sqlite:///{tmp_path / 'mlflow.db'}")
     monkeypatch.setenv("HOTELPRICE_MLFLOW_ARTIFACT_DIR", str(tmp_path / "mlartifacts"))
     monkeypatch.setenv("HOTELPRICE_MLFLOW_EXPERIMENT", "test-experiment")
+    monkeypatch.setenv("HOTELPRICE_MLFLOW_MODEL_NAME", "test-model")
     return tmp_path / "models"
 
 
@@ -99,3 +100,18 @@ def test_two_runs_share_one_experiment(train_env, tmp_path):
     client = mlflow.MlflowClient(f"sqlite:///{tmp_path / 'mlflow.db'}")
     experiment = client.get_experiment_by_name("test-experiment")
     assert len(client.search_runs([experiment.experiment_id])) == 2
+
+
+def test_training_registers_a_model_version(train_env, tmp_path):
+    run_training()
+    run_training()
+
+    # Each training run creates a new version of the registered model, linked to its own run.
+    client = mlflow.MlflowClient(f"sqlite:///{tmp_path / 'mlflow.db'}")
+    versions = sorted(
+        client.search_model_versions("name='test-model'"), key=lambda v: int(v.version)
+    )
+    assert [str(v.version) for v in versions] == ["1", "2"]
+    assert versions[0].run_id != versions[1].run_id
+    for v in versions:
+        assert client.get_run(v.run_id).info.status == "FINISHED"

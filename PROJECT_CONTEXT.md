@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry)
 - **In progress:** none
-- **Next:** Milestone 3.2 (MLflow Model Registry)
+- **Next:** Milestone 4.1 (BentoML service)
 
 ## Completed Milestones
 
@@ -64,6 +64,17 @@ Source of truth for the current project state. Update after every milestone.
 - **README:** new "Experiment tracking (MLflow)" section (what is logged, train, start the UI, load a model, env vars).
 - No tuning, autologging, extra models, Model Registry, BentoML, Docker or CI/CD.
 
+### 3.2 MLflow Model Registry
+- **Registration is one argument in `run_training()`** (`train.py`): `mlflow.xgboost.log_model(model, name="model", registered_model_name=...)`. Every training run (including `dvc repro`) creates a new version of the registered model, linked to its run (`version.run_id`). `dvc.yaml` is unchanged (`dvc.lock` only has new hashes for `config.py`/`train.py`).
+- **Registered model name:** `hotel-price-model`, from env `HOTELPRICE_MLFLOW_MODEL_NAME` (`get_registered_model_name()` in `config.py`, listed in `.env.example`).
+- **Alias approach:** the alias `champion` marks the selected version; no Staging/Production stages. Newest version is registered automatically, the alias is moved explicitly. No promotion rules, comparison logic or gates.
+- **`src/hotelprice/select_model.py`** (the only new source file): a plain top-to-bottom script. `python -m hotelprice.select_model [VERSION]` lists all versions (run ID, mae/rmse/r2, aliases) and sets `champion` on VERSION, or on the latest version if none is given. It runs at import (no functions), so tests call it with `runpy`.
+- **Model + preprocessor per version:** the model is loaded with `models:/hotel-price-model@champion`; the preprocessor is a run artifact, so resolve the version with `client.get_model_version_by_alias(name, "champion")`, then download `runs:/<version.run_id>/preprocessor/preprocessor.joblib`. Snippet is in the README (Model Registry section). BentoML (4.1) needs both.
+- **MLflow 3 details:** the version's `source` is `models:/m-<id>` (the logged model), and `search_model_versions` returns `version` as an int and does not fill in aliases, so the script reads aliases from `get_registered_model(name).aliases`.
+- **Tests:** `train_env` sets `HOTELPRICE_MLFLOW_MODEL_NAME=test-model`; new `test_training_registers_a_model_version` (two runs → versions 1 and 2, each linked to a finished run) and new `tests/test_select_model.py` (alias set to 1 then 2 loads through `models:/test-model@champion`, with its preprocessor predicting; no argument selects the latest). All use a temp SQLite store under `tmp_path`.
+- **README:** new "Model Registry (MLflow)" section (register, select, load champion + preprocessor, env var).
+- No BentoML, Docker or CI/CD.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -75,7 +86,7 @@ Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
 Git → GitHub → GitHub Actions
 ```
 
-Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking (inside `run_training`), wired together by the DVC `train` stage. Data flow:
+Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking + Model Registry (inside `run_training`; `select_model` sets the alias), wired together by the DVC `train` stage. Data flow:
 
 ```text
 data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit(train) → transform(train, test)
@@ -96,14 +107,16 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 ├── src/hotelprice/          # Python package
 │   ├── config.py            # column lists + env-driven settings
 │   ├── data_pipeline.py     # run_data_pipeline(): load, split, preprocess, save
-│   └── train.py             # run_training(): train, evaluate, save model + metrics, log to MLflow
+│   ├── train.py             # run_training(): train, evaluate, save model + metrics, log + register in MLflow
+│   └── select_model.py      # script: list registered versions, set the "champion" alias
 ├── mlflow.db, mlartifacts/  # local MLflow store (git-ignored, created on first run)
 ├── models/                  # training output; model/preprocessor DVC-cached, metrics.json in Git
 ├── pipelines/               # empty (.gitkeep); ML pipeline entry points
 ├── config/                  # empty (.gitkeep); configuration files
 ├── tests/test_smoke.py      # package import + dataset schema tests
 ├── tests/test_data_pipeline.py  # data pipeline tests
-├── tests/test_train.py      # training tests (small sample)
+├── tests/test_train.py      # training, MLflow and registration tests (small sample)
+├── tests/test_select_model.py  # alias selection tests
 ├── tests/conftest.py        # shared small-sample CSV fixture
 ├── .env.example             # optional HOTELPRICE_* overrides (incl. MLflow) with defaults
 ├── pyproject.toml           # dependencies, pytest and ruff config
@@ -191,10 +204,14 @@ dvc metrics diff    # compare workspace (or two revisions) metrics
 python -m hotelprice.train
 mlflow ui --backend-store-uri sqlite:///mlflow.db
 
+# Model Registry: each training run registers a new version; set the champion alias
+python -m hotelprice.select_model 2   # alias on version 2 (no argument = latest version)
+# Load: mlflow.xgboost.load_model("models:/hotel-price-model@champion"); preprocessor via the version's run_id
+
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
 # Training output dir: HOTELPRICE_MODEL_DIR=/tmp/models python -m hotelprice.train
-# MLflow: HOTELPRICE_MLFLOW_TRACKING_URI, HOTELPRICE_MLFLOW_ARTIFACT_DIR, HOTELPRICE_MLFLOW_EXPERIMENT
+# MLflow: HOTELPRICE_MLFLOW_TRACKING_URI, HOTELPRICE_MLFLOW_ARTIFACT_DIR, HOTELPRICE_MLFLOW_EXPERIMENT, HOTELPRICE_MLFLOW_MODEL_NAME
 ```
 
 ## Verification Results (Milestone 0.1)
@@ -258,11 +275,22 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - **Load back:** `mlflow.xgboost.load_model("runs:/<run_id>/model")` and the downloaded `preprocessor/preprocessor.joblib` predicted for 3 raw dataset rows: 5867, 15160, 7466 vs actual 5744, 15168, 7002.
 - `git status`: `mlflow.db` and `mlartifacts/` are ignored; changes are `.env.example`, `dvc.lock`, `pyproject.toml`, `config.py`, `train.py`, `tests/test_train.py`, README and this file.
 
+## Verification Results (Milestone 3.2)
+
+- `ruff check .` and `ruff format --check .` pass. `pytest`: 16 passed (13 previous + 3 new).
+- **Register:** `dvc repro` (code changed, retrained) created version 1; `python -m hotelprice.train` created version 2 (metrics identical to earlier milestones: MAE 387.36, RMSE 495.51, R² 0.9772). A second `dvc repro` skipped the stage.
+- **Alias switching** (real `mlflow.db`): `select_model 1` → `models:/hotel-price-model@champion` resolved to v1 (run `5bdd4cc8…`, source `models:/m-c950ec37…`); `select_model 2` → resolved to v2 (run `4bcaa85d…`, source `models:/m-b50f30d9…`). Each time the linked run's preprocessor was downloaded via `runs:/<run_id>/preprocessor/preprocessor.joblib`, and model + preprocessor predicted 5867, 15160, 7466 for 3 real rows (actual 5744, 15168, 7002). The predictions are the same for both versions because the runs are deterministic and identical; the version, run ID and source show that the alias moved. The listing shows `aliases=champion` on the selected version. `select_model` with no argument set the alias on v2. Final state: `champion` → v2.
+- **MLflow UI:** `mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000` served HTTP 200; the registered-models and model-versions REST endpoints returned `hotel-price-model` with alias `champion` → version 2 and versions 1 and 2, each with its run ID. Checked through the API, not by looking at the pages in a browser. The UI process was stopped.
+- `git status`: `mlflow.db` and `mlartifacts/` are ignored; changes are `.env.example`, `dvc.lock`, `config.py`, `train.py`, `select_model.py`, the tests, README and this file.
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
 - `pipelines/` and `config/` are placeholders; settings currently live in `src/hotelprice/config.py` and env vars.
-- The preprocessor is logged as a run artifact, separate from the model; registering the model and preprocessor together is left to 3.2.
+- The preprocessor is a run artifact, not part of the registered model; it is found through the version's `run_id` (two lookups). Bundling it with the model is not done.
+- Every training run registers a new version, including each `dvc repro`, so versions accumulate. The 3 runs from 3.1 have no registered version. Versions 1 and 2 in the local registry come from identical deterministic runs, so their predictions and metrics are the same.
+- `select_model.py` runs on import; it is meant to be run as a script only.
+- `ruff format .` (0.16) also reformats Python code blocks in `README.md`.
 - `mlflow.db` and `mlartifacts/` are local and git-ignored, and are not DVC-tracked; each clone has its own run history. Runs from every `dvc repro` or manual train are added, so the store grows.
 - Because the `git_commit` tag is `HEAD`, a run from an uncommitted working tree carries the previous commit's SHA.
 - The MLflow artifact dir only applies at experiment creation. If `mlflow.db` is deleted but `mlartifacts/` is kept, old artifacts are orphaned.
@@ -278,4 +306,4 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 
 ## Next Milestone
 
-**3.2 MLflow Model Registry**: register the trained model (and its preprocessor) in the MLflow Model Registry on the same SQLite store, per the milestone prompt.
+**4.1 BentoML service**: load the `champion` model from the MLflow registry and its preprocessor through the version's run ID, and serve predictions with BentoML (not FastAPI), per the milestone prompt.

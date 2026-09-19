@@ -73,3 +73,8 @@ def get_mlflow_artifact_dir() -> Path:
 def get_mlflow_experiment_name() -> str:
     """MLflow experiment (env: HOTELPRICE_MLFLOW_EXPERIMENT, default: hotel-price-prediction)."""
     return os.environ.get("HOTELPRICE_MLFLOW_EXPERIMENT", "hotel-price-prediction")
+
+
+def get_registered_model_name() -> str:
+    """Registry model name (env: HOTELPRICE_MLFLOW_MODEL_NAME, default: hotel-price-model)."""
+    return os.environ.get("HOTELPRICE_MLFLOW_MODEL_NAME", "hotel-price-model")
