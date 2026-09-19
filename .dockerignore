@@ -1,0 +1,36 @@
+# Only the service code and serving_artifacts/ belong in the image (see Dockerfile COPY lines).
+# Everything else is excluded so no data, MLflow store, secrets or dev files leak into the build context.
+.git
+.gitignore
+.dvc
+.dvcignore
+*.dvc
+dvc.yaml
+dvc.lock
+data/
+models/
+artifacts/
+mlflow.db
+mlruns/
+mlartifacts/
+bentoml/
+.venv/
+venv/
+env/
+tests/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+.env.*
+.vscode/
+.idea/
+*.md
+Dockerfile
+.dockerignore
+pyproject.toml
+config/
+pipelines/

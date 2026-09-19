@@ -1,15 +1,22 @@
-"""BentoML service: serves room price predictions from the MLflow "champion" model.
+"""BentoML service: serves room price predictions from the "champion" model.
 
 Run: bentoml serve hotelprice.service:HotelPriceService
-Requires a champion model: `python -m hotelprice.train`, then `python -m hotelprice.select_model`.
+Two loading modes, chosen at startup:
+- MODEL_ARTIFACT_DIR set (Docker): load model.json, preprocessor.joblib and metadata.json from that
+  directory, written by `python -m hotelprice.export_artifacts`. MLflow is not needed.
+- MODEL_ARTIFACT_DIR not set (local): load the champion from the MLflow registry. Requires
+  `python -m hotelprice.train`, then `python -m hotelprice.select_model`.
 """
 
+import json
+import os
 import tempfile
+from pathlib import Path
 
 import bentoml
 import joblib
-import mlflow
 import pandas as pd
+import xgboost
 from pydantic import BaseModel
 
 from hotelprice.config import FEATURES, get_mlflow_tracking_uri, get_registered_model_name
@@ -41,6 +48,26 @@ class HotelPriceResponse(BaseModel):
 @bentoml.service
 class HotelPriceService:
     def __init__(self) -> None:
+        artifact_dir = os.environ.get("MODEL_ARTIFACT_DIR")
+        if artifact_dir:
+            # Docker mode: load the exported snapshot; no MLflow store is needed.
+            try:
+                self.model_version = str(
+                    json.loads((Path(artifact_dir) / "metadata.json").read_text())["model_version"]
+                )
+                self.model = xgboost.XGBRegressor()
+                self.model.load_model(Path(artifact_dir) / "model.json")
+                self.preprocessor = joblib.load(Path(artifact_dir) / "preprocessor.joblib")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Could not load model artifacts from MODEL_ARTIFACT_DIR='{artifact_dir}'. "
+                    f"Run `python -m hotelprice.export_artifacts` first. ({e})"
+                ) from e
+            return
+
+        # Local mode: load the champion from the MLflow registry (MLflow is not in the image).
+        import mlflow
+
         # 1. Point MLflow at the tracking store and find the version the champion alias points to.
         mlflow.set_tracking_uri(get_mlflow_tracking_uri())
         name = get_registered_model_name()

@@ -1,0 +1,9 @@
+# Runtime dependencies of the BentoML service inside the Docker image (no MLflow, DVC or dev tools).
+# Pinned to the versions used for training so the joblib preprocessor and the XGBoost model load.
+bentoml==1.4.39
+xgboost-cpu==3.4.1  # same library as xgboost 3.4.1, CPU-only wheel (no ~290 MB of NVIDIA GPU libraries)
+scikit-learn==1.9.1
+pandas==3.0.6
+numpy==2.5.3
+joblib==1.6.0
+pydantic==2.13.5

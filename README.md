@@ -40,10 +40,11 @@ Only the ML libraries, DVC, MLflow, pytest and Ruff (dev) are installed at this 
 ```text
 .
 ├── data/                # Dataset (dataset.csv is DVC-tracked; dataset.csv.dvc is in Git)
-├── src/hotelprice/      # Python package: config, data pipeline, training, model selection, BentoML service
+├── src/hotelprice/      # Python package: config, data pipeline, training, model selection, artifact export, BentoML service
 ├── pipelines/           # ML pipeline entry points (training, evaluation)
 ├── config/              # Configuration files
 ├── tests/               # pytest tests
+├── Dockerfile, .dockerignore, requirements-serving.txt   # serving image (needs serving_artifacts/)
 ├── dvc.yaml             # DVC pipeline (train stage); dvc.lock pins its inputs/outputs
 ├── .env.example         # Configurable environment variables (all optional)
 ├── pyproject.toml       # Project metadata and dependencies
@@ -165,7 +166,7 @@ python -m hotelprice.select_model      # sets the "champion" alias (latest versi
 bentoml serve hotelprice.service:HotelPriceService    # http://localhost:3000
 ```
 
-Environment variables (all optional, see `.env.example`): `HOTELPRICE_MLFLOW_TRACKING_URI` (default: the repo's `mlflow.db`) and `HOTELPRICE_MLFLOW_MODEL_NAME` (default `hotel-price-model`). The service reads the local MLflow store, so it must run where that store and its artifacts exist.
+Environment variables (all optional, see `.env.example`): `HOTELPRICE_MLFLOW_TRACKING_URI` (default: the repo's `mlflow.db`) and `HOTELPRICE_MLFLOW_MODEL_NAME` (default `hotel-price-model`). Without `MODEL_ARTIFACT_DIR` the service reads the local MLflow store, so it must run where that store and its artifacts exist. With `MODEL_ARTIFACT_DIR` set it loads exported files instead (see Docker below).
 
 Example request (a row from the dataset; all 11 feature fields are required):
 
@@ -183,6 +184,35 @@ curl -X POST http://localhost:3000/predict \
 ```
 
 Unknown categories (e.g. a new hotel name) are accepted and encoded as missing by the preprocessor. A missing field or wrong type returns HTTP 400 with the validation details. Health endpoints: `GET /livez` and `GET /readyz`.
+
+### Docker
+
+The image is self-contained: it holds the service code and a **snapshot of the champion model** exported from the MLflow registry. It does not contain MLflow, DVC, `mlflow.db`, the dataset or any secrets, and needs nothing from the host at runtime. Inside the image `MODEL_ARTIFACT_DIR` is set, so the service loads `model.json`, `preprocessor.joblib` and `metadata.json` from that directory (the model version in each response comes from `metadata.json`). Without `MODEL_ARTIFACT_DIR` (local development) the service loads from MLflow as described above.
+
+```bash
+python -m hotelprice.train                            # 1. train (registers a new model version)
+python -m hotelprice.select_model                     # 2. set the champion alias (or pass a version)
+python -m hotelprice.export_artifacts                 # 3. write serving_artifacts/ (git-ignored)
+docker build -t hotel-price-service:local .           # 4. build the image
+docker run --rm -p 3000:3000 hotel-price-service:local    # 5. serve on http://localhost:3000
+```
+
+The request and response are the same as above:
+
+```bash
+curl -X POST http://localhost:3000/predict -H 'Content-Type: application/json' \
+  -d '{"hotel": "The Meridian", "city": "Bengaluru", "room_type": "Standard", "season": "Shoulder", "day_of_week": "Wednesday", "is_holiday": 0, "is_weekend": 0, "occupancy": 10.0, "demand": 45.96, "booking_lead_time_days": 16, "competitor_price": 6791.59}'
+# {"predicted_room_price": 5867.1142578125, "model_version": "2"}
+```
+
+`GET /livez` and `GET /readyz` work as before, and the image has a `HEALTHCHECK` on `/livez` (`docker ps` shows `healthy`).
+
+| Variable | Where | Meaning |
+|----------|-------|---------|
+| `MODEL_ARTIFACT_DIR` | image (`/app/serving_artifacts`) | Set: load the exported snapshot from this directory. Unset: load the champion from MLflow. |
+| `HOTELPRICE_MLFLOW_TRACKING_URI`, `HOTELPRICE_MLFLOW_MODEL_NAME` | export script and local serving | Which registry to read. Not used inside the container. |
+
+**Rebuild rule:** the image contains the champion as it was when you ran `export_artifacts`. If you train a new model or move the `champion` alias, re-run `export_artifacts` and `docker build`; a running or already built image never changes. `requirements-serving.txt` pins the library versions used for training (the preprocessor and model must load with compatible versions); update it if the training environment changes. It uses `xgboost-cpu`, the CPU-only build of the same XGBoost release, which keeps the image about 700 MB smaller than the default `xgboost` wheel (GPU libraries).
 
 ### Data versioning and pipeline (DVC)
 

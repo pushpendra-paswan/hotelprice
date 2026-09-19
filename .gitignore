@@ -46,3 +46,6 @@ bentoml/
 .vscode/
 .idea/
 .DS_Store
+
+# Docker serving snapshot exported from the MLflow champion (src/hotelprice/export_artifacts.py)
+serving_artifacts/

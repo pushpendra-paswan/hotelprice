@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry), 4.1 (BentoML service)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry), 4.1 (BentoML service), 4.2 (Docker)
 - **In progress:** none
-- **Next:** Milestone 4.2 (Dockerize the BentoML service)
+- **Next:** Milestone 5.1 (GitHub Actions CI)
 
 ## Completed Milestones
 
@@ -87,6 +87,18 @@ Source of truth for the current project state. Update after every milestone.
 - **README:** new "Serving (BentoML)" section (serve command, env vars, champion prerequisite, curl request/response, error behavior, health endpoints).
 - No Bento build, Docker, authentication, batching, caching, monitoring or extra endpoints. Training, MLflow logging and DVC are unchanged.
 
+### 4.2 Docker
+- **Problem solved:** the service read the local MLflow store (`mlflow.db`, absolute artifact paths), which cannot exist in a container. The image now holds a snapshot of the champion and never touches MLflow.
+- **How artifacts get into the image:** `python -m hotelprice.export_artifacts [OUTPUT_DIR]` (new script `src/hotelprice/export_artifacts.py`, plain top-to-bottom like `select_model.py`) resolves `models:/<name>@champion`, then writes to the git-ignored `serving_artifacts/`: `model.json` (native XGBoost), `preprocessor.joblib` (downloaded from the run linked to that model version) and `metadata.json` (`model_name`, `model_version`, `run_id`). It exits with a clear message (mentions `select_model`) if the alias does not exist. The Dockerfile then `COPY`s `serving_artifacts/`.
+- **Two loading modes** (simple `if`/early return at the top of `HotelPriceService.__init__`, same single file): `MODEL_ARTIFACT_DIR` set → load `metadata.json` (model version for responses), `model.json` via `xgboost.XGBRegressor().load_model`, and `preprocessor.joblib`; failure raises `RuntimeError` naming the directory and `export_artifacts`. Not set → the unchanged MLflow-registry path (local development). `import mlflow` moved inside that second branch, so the image does not need MLflow. Preprocessing is not duplicated (the same saved preprocessor is used).
+- **`requirements-serving.txt`:** `bentoml==1.4.39`, `xgboost-cpu==3.4.1`, `scikit-learn==1.9.1`, `pandas==3.0.6`, `numpy==2.5.3`, `joblib==1.6.0`, `pydantic==2.13.5` (same versions as the training environment). No MLflow, DVC, Ruff or pytest.
+- **`Dockerfile`:** `python:3.12-slim` (project runs Python 3.12.3); `pip install --no-cache-dir -r requirements-serving.txt` before any code is copied; non-root user `app` (uid 1000); copies only `__init__.py`, `config.py`, `service.py` (into `/app/hotelprice/`) and `serving_artifacts/`; `ENV MODEL_ARTIFACT_DIR=/app/serving_artifacts`; `EXPOSE 3000`; `HEALTHCHECK` on `/livez` via `python -c urllib.request.urlopen(...)` (no curl in slim); `CMD bentoml serve hotelprice.service:HotelPriceService --port 3000`. No secrets, `.env` or `mlflow.db`.
+- **`.dockerignore`:** excludes `.git`, `.dvc`/`*.dvc`/`dvc.*`, `data/`, `models/`, `artifacts/`, `mlflow.db`, `mlruns/`, `mlartifacts/`, `bentoml/`, virtualenvs, `tests/`, caches, `.env*`, `*.md`, `pyproject.toml`, `config/`, `pipelines/`, editor files. `serving_artifacts/` is included (and in `.gitignore`).
+- **Image size decision:** the first build with plain `xgboost==3.4.1` was **1.46 GB** (disk usage): the default Linux wheel pulls ~290 MB of NVIDIA NCCL/CUDA libraries. Switching the pin to `xgboost-cpu==3.4.1` (same release and API, CPU-only, GPU support is out of scope) gave the final **`hotel-price-service:local`: 787 MB disk usage (178 MB compressed)**. Remaining size is mostly scipy/pandas/sklearn/numpy. No other reductions were applied.
+- **Tests** (added to `tests/test_service.py`, temp MLflow store under `tmp_path`): export writes the three files and they load and predict on their own; export exits with a `select_model` message without a champion and writes nothing; service in `MODEL_ARTIFACT_DIR` mode with the MLflow URI pointing at a non-existent DB gives the same prediction and version as MLflow mode (and does not create that DB); an empty artifact dir raises a clear `RuntimeError`.
+- **README:** new "Docker" section (workflow, curl example, variables, rebuild rule). `.env.example` documents `MODEL_ARTIFACT_DIR`.
+- No docker-compose, MLflow server container, registry push, GPU support or CI/CD. Training, MLflow logging and DVC are unchanged.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -98,7 +110,7 @@ Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
 Git → GitHub → GitHub Actions
 ```
 
-Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking + Model Registry (inside `run_training`; `select_model` sets the alias), wired together by the DVC `train` stage, then BentoML (`service.py`) loading the champion from the registry. Data flow:
+Implemented so far (through Docker): Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking + Model Registry (inside `run_training`; `select_model` sets the alias), wired together by the DVC `train` stage, then BentoML (`service.py`) loading the champion from the registry. Data flow:
 
 ```text
 data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit(train) → transform(train, test)
@@ -107,7 +119,10 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
                                                         ├→ models/{model.json, preprocessor.joblib, metrics.json}
                                                         └→ MLflow run (mlflow.db + mlartifacts/): params, metrics, tags, model, preprocessor
 
-models:/<name>@champion + runs:/<champion run_id>/preprocessor → BentoML service (startup) → POST /predict
+models:/<name>@champion + runs:/<champion run_id>/preprocessor → BentoML service (startup) → POST /predict   (local mode)
+
+models:/<name>@champion → export_artifacts → serving_artifacts/{model.json, preprocessor.joblib, metadata.json}
+    → docker build (COPY) → image with MODEL_ARTIFACT_DIR → BentoML service (startup) → POST /predict   (Docker mode)
 ```
 
 ## Repository Structure
@@ -123,7 +138,10 @@ models:/<name>@champion + runs:/<champion run_id>/preprocessor → BentoML servi
 │   ├── data_pipeline.py     # run_data_pipeline(): load, split, preprocess, save
 │   ├── train.py             # run_training(): train, evaluate, save model + metrics, log + register in MLflow
 │   ├── select_model.py      # script: list registered versions, set the "champion" alias
-│   └── service.py           # BentoML service: loads champion model + preprocessor, POST /predict
+│   ├── export_artifacts.py  # script: export champion model + preprocessor + metadata to serving_artifacts/
+│   └── service.py           # BentoML service: loads champion (MLflow, or MODEL_ARTIFACT_DIR), POST /predict
+├── serving_artifacts/       # exported champion snapshot for the image (git-ignored, created by export_artifacts)
+├── Dockerfile, .dockerignore, requirements-serving.txt   # serving image
 ├── mlflow.db, mlartifacts/  # local MLflow store (git-ignored, created on first run)
 ├── models/                  # training output; model/preprocessor DVC-cached, metrics.json in Git
 ├── pipelines/               # empty (.gitkeep); ML pipeline entry points
@@ -132,7 +150,7 @@ models:/<name>@champion + runs:/<champion run_id>/preprocessor → BentoML servi
 ├── tests/test_data_pipeline.py  # data pipeline tests
 ├── tests/test_train.py      # training, MLflow and registration tests (small sample)
 ├── tests/test_select_model.py  # alias selection tests
-├── tests/test_service.py    # BentoML service tests (temp MLflow store)
+├── tests/test_service.py    # BentoML service + export tests (temp MLflow store)
 ├── tests/conftest.py        # shared small-sample CSV fixture
 ├── .env.example             # optional HOTELPRICE_* overrides (incl. MLflow) with defaults
 ├── pyproject.toml           # dependencies, pytest and ruff config
@@ -187,6 +205,7 @@ models:/<name>@champion + runs:/<champion run_id>/preprocessor → BentoML servi
 - DVC 3.67.1: one default remote `localstorage` (directory outside the repo, set in git-ignored `.dvc/config.local`); `core.analytics = false`.
 - MLflow 3.16.1: tracking URI `sqlite:///<repo>/mlflow.db`, artifacts in `<repo>/mlartifacts`, experiment `hotel-price-prediction` (all overridable, see `.env.example`). Resolved versions otherwise unchanged; `pip check` clean.
 - BentoML 1.4.39 (pydantic 2.13.5, unchanged); service on port 3000 by default; reads the same `HOTELPRICE_MLFLOW_TRACKING_URI` / `HOTELPRICE_MLFLOW_MODEL_NAME` as training.
+- Docker 29.6.1 (local build); base image `python:3.12-slim`; container port 3000; `MODEL_ARTIFACT_DIR=/app/serving_artifacts` inside the image; serving dependency pins in `requirements-serving.txt`.
 - Ruff: `line-length = 100`, lint rules `E, F, I, UP, B`, `src = ["src", "tests"]` in `pyproject.toml`.
 
 ## Commands
@@ -229,6 +248,11 @@ python -m hotelprice.select_model 2   # alias on version 2 (no argument = latest
 bentoml serve hotelprice.service:HotelPriceService
 curl -X POST http://localhost:3000/predict -H 'Content-Type: application/json' \
   -d '{"hotel":"The Meridian","city":"Bengaluru","room_type":"Standard","season":"Shoulder","day_of_week":"Wednesday","is_holiday":0,"is_weekend":0,"occupancy":10.0,"demand":45.96,"booking_lead_time_days":16,"competitor_price":6791.59}'
+
+# Docker: export the champion snapshot, build, run (rebuild after any champion change)
+python -m hotelprice.export_artifacts                 # writes serving_artifacts/ (git-ignored)
+docker build -t hotel-price-service:local .
+docker run --rm -p 3000:3000 hotel-price-service:local   # same /predict, /livez, /readyz on :3000
 
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
@@ -313,6 +337,17 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - **Invalid requests:** `{"hotel":"Taj"}` → HTTP 400 listing the 10 missing fields; `occupancy: "high"` → HTTP 400 (`float_parsing`). `/livez` still 200 afterwards. A request with unseen hotel/city returned 200 with a price.
 - The server was stopped after the check.
 
+## Verification Results (Milestone 4.2)
+
+- `ruff check .` and `ruff format .` clean. `pytest`: 25 passed (21 previous + 4 new, about 110 s). `dvc status`: "Data and pipelines are up to date" (no change to training, MLflow or DVC).
+- **Export** against the real `mlflow.db` (champion = version 2, run `4bcaa85d…`): wrote `model.json` (937 KB), `preprocessor.joblib` (4 KB), `metadata.json` (`hotel-price-model`, version `2`).
+- **Build:** `docker build -t hotel-price-service:local .` succeeded; 787 MB disk usage / 178 MB compressed (1.46 GB before switching to `xgboost-cpu`). The pip layer is cached when only code or artifacts change.
+- **Run:** `docker run -d -p 3000:3000` became ready in about 5 s; `/livez` and `/readyz` returned 200; `docker inspect` health status `healthy`; `id` inside shows `uid=1000(app)`; log shows "Service HotelPriceService initialized".
+- **Predictions** (dataset rows 0, 500, 1500, 1999, sent to the container on :3000, to the non-container MLflow-mode service on :3001, and computed directly by loading `models:/hotel-price-model@champion` and the run's preprocessor in Python): 5867.1142578125, 8568.1923828125, 7092.30712890625, 12444.6982421875, all **exactly equal** across the three paths (actual prices 5743.83, 8710.88, 6874.36, 12571.79). Every response reported `model_version` "2".
+- **Invalid requests to the container:** `{"hotel":"Taj"}` → HTTP 400 (10 missing fields); `occupancy: "high"` → HTTP 400 (`float_parsing`); `/livez` still 200 afterwards.
+- **No `mlflow.db` or data in the container:** the build context is filtered by `.dockerignore` and the Dockerfile copies only named paths. Checked inside the running container: `/app` contains only `hotelprice/`, `requirements-serving.txt` and `serving_artifacts/` (three files); `find /` for `mlflow.db`, `dataset.csv*`, `.env`, `mlartifacts` found nothing; `import mlflow` and `import dvc` both fail with `ModuleNotFoundError`; the run used no volume mounts. The MLflow-free loading path is also covered by a test that points the MLflow URI at a non-existent DB.
+- Existing MLflow-based local serving still works (the port-3001 service above loaded the champion from the real store).
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
@@ -334,11 +369,17 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - `dvc gc` deletes cached objects not referenced by the current workspace (`-w`) or other revisions; use it carefully once real history exists.
 - The dataset had to be sourced from outside the repo (see Dataset). If a different canonical dataset exists, replace it deliberately.
 
-- The service reads the **local** MLflow store (`mlflow.db` + `mlartifacts/`), and model artifact paths stored in the DB are absolute paths. It only works where the store and artifacts exist at the same paths.
-- The champion is resolved once at startup; moving the alias needs a service restart.
+- Local mode (no `MODEL_ARTIFACT_DIR`) reads the **local** MLflow store (`mlflow.db` + `mlartifacts/`), and model artifact paths stored in the DB are absolute paths, so it only works where the store and artifacts exist at the same paths. The Docker image avoids this by using the export.
+- The champion is resolved once at startup; moving the alias needs a service restart (local mode) or a re-export and image rebuild (Docker mode).
+- **The image is a snapshot of the champion at export time.** Changing the champion means `export_artifacts` then `docker build`; nothing warns if `serving_artifacts/` is stale. `serving_artifacts/` is git-ignored, so a fresh clone (and CI) has none and cannot build the image until it is created.
+- `requirements-serving.txt` pins must be kept in step with the training environment by hand (joblib preprocessor and model compatibility). It uses `xgboost-cpu` (CPU-only build of the same release) rather than `xgboost`; the Docker path has no GPU support.
+- The image is about 787 MB (scipy, pandas, sklearn, numpy dominate); no image scanning or multi-stage build was done.
+- `export_artifacts.py`, like `select_model.py`, runs on import and is meant to be run as a script only.
 - `bentoml serve` prints MLflow INFO lines and the agent hint at startup; the test run shows Pydantic/starlette deprecation warnings from BentoML internals.
 - Tests use `HotelPriceService.inner()` to get the plain class; this is BentoML SDK behavior that could change between versions.
 
 ## Next Milestone
 
-**4.2 Dockerize the BentoML service.** Note: the service currently loads from the local MLflow store (SQLite `mlflow.db` + `mlartifacts/` with absolute artifact paths), so containerization must make the champion model and its preprocessor available inside the image (for example by exporting them from the registry at build time or mounting the store), and decide how `HOTELPRICE_MLFLOW_TRACKING_URI` / the model name are set in the container.
+**5.1 GitHub Actions CI** (tests, code quality, ML validation, Docker build).
+
+**Note for Milestone 5 (CI/CD):** the real `serving_artifacts/` (and `mlflow.db`, `models/`, the dataset) are git-ignored/DVC-tracked, so a CI checkout has no artifacts to `COPY`. Before `docker build`, CI must produce `serving_artifacts/` itself: either train a small model on a tiny fixture dataset into a temporary MLflow store (`HOTELPRICE_*` env overrides, as the tests do), set the champion alias, and run `python -m hotelprice.export_artifacts`; or write a small fixture export directly. The Docker build step should then smoke-test the container (`/livez`, one `/predict`). Tag the image with the Git commit SHA in 5.2 (publishing is not part of 4.2).

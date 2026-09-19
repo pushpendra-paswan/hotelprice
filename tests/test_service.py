@@ -1,5 +1,12 @@
+import json
+import runpy
+import sys
+
+import joblib
 import mlflow
+import pandas as pd
 import pytest
+import xgboost
 from starlette.testclient import TestClient
 
 from hotelprice.config import FEATURES
@@ -83,4 +90,50 @@ def test_invalid_request_is_rejected_over_http(champion_env):
 def test_service_fails_clearly_without_champion(mlflow_env):
     run_training()  # a version exists, but no alias has been set
     with pytest.raises(RuntimeError, match="select_model"):
+        HotelPriceService.inner()
+
+
+def export(monkeypatch, out_dir):
+    monkeypatch.setattr(sys, "argv", ["export_artifacts", str(out_dir)])
+    runpy.run_module("hotelprice.export_artifacts", run_name="__main__")
+
+
+def test_export_writes_champion_artifacts(champion_env, tmp_path, monkeypatch):
+    export(monkeypatch, tmp_path / "out")
+
+    metadata = json.loads((tmp_path / "out" / "metadata.json").read_text())
+    assert metadata["model_name"] == "test-model"
+    assert metadata["model_version"] == "1"
+
+    # The exported files load on their own and predict from a raw row.
+    model = xgboost.XGBRegressor()
+    model.load_model(tmp_path / "out" / "model.json")
+    preprocessor = joblib.load(tmp_path / "out" / "preprocessor.joblib")
+    assert model.predict(preprocessor.transform(pd.DataFrame([ROW])[FEATURES])).shape == (1,)
+
+
+def test_export_fails_clearly_without_champion(mlflow_env, tmp_path, monkeypatch):
+    run_training()  # a version exists, but no alias has been set
+    with pytest.raises(SystemExit, match="select_model"):
+        export(monkeypatch, tmp_path / "out")
+    assert not (tmp_path / "out" / "model.json").exists()
+
+
+def test_service_loads_from_artifact_dir_without_mlflow(champion_env, tmp_path, monkeypatch):
+    mlflow_prediction = HotelPriceService.inner().predict(**ROW).predicted_room_price
+    export(monkeypatch, tmp_path / "out")
+
+    # Docker mode: the MLflow store is pointed at nothing, so only the exported files can be used.
+    monkeypatch.setenv("MODEL_ARTIFACT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("HOTELPRICE_MLFLOW_TRACKING_URI", f"sqlite:///{tmp_path / 'missing.db'}")
+    service = HotelPriceService.inner()
+    response = service.predict(**ROW)
+    assert response.model_version == "1"
+    assert response.predicted_room_price == mlflow_prediction
+    assert not (tmp_path / "missing.db").exists()
+
+
+def test_service_fails_clearly_with_empty_artifact_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ARTIFACT_DIR", str(tmp_path))
+    with pytest.raises(RuntimeError, match="export_artifacts"):
         HotelPriceService.inner()
