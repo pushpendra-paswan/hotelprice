@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Notebooks
+.ipynb_checkpoints/
+
+# ML artifacts (models, MLflow, BentoML)
+models/
+artifacts/
+mlruns/
+mlartifacts/
+mlflow.db
+*.pkl
+*.joblib
+*.ubj
+bentoml/
+
+# DVC (local cache and config; dataset itself is not ignored yet)
+/.dvc/cache
+/.dvc/tmp
+/.dvc/config.local
+.dvcignore.local
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
