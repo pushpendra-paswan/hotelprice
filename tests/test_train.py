@@ -14,7 +14,9 @@ from hotelprice.train import run_training
 def train_env(sample_csv, tmp_path, monkeypatch):
     """Point training at the small sample and temp output locations."""
     monkeypatch.setenv("HOTELPRICE_DATA_PATH", str(sample_csv))
-    monkeypatch.setenv("HOTELPRICE_PREPROCESSOR_PATH", str(tmp_path / "data_pipeline_preprocessor.joblib"))
+    monkeypatch.setenv(
+        "HOTELPRICE_PREPROCESSOR_PATH", str(tmp_path / "data_pipeline_preprocessor.joblib")
+    )
     monkeypatch.setenv("HOTELPRICE_MODEL_DIR", str(tmp_path / "models"))
     monkeypatch.setenv("HOTELPRICE_TEST_SIZE", "0.25")
     return tmp_path / "models"

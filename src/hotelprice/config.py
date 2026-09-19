@@ -37,7 +37,9 @@ def get_data_path() -> Path:
 def get_preprocessor_path() -> Path:
     """Where the fitted preprocessor is saved (env: HOTELPRICE_PREPROCESSOR_PATH)."""
     return Path(
-        os.environ.get("HOTELPRICE_PREPROCESSOR_PATH", PROJECT_ROOT / "artifacts" / "preprocessor.joblib")
+        os.environ.get(
+            "HOTELPRICE_PREPROCESSOR_PATH", PROJECT_ROOT / "artifacts" / "preprocessor.joblib"
+        )
     )
 
 
