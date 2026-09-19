@@ -33,7 +33,7 @@ Git → GitHub → GitHub Actions (tests, code quality, ML validation,
 | Containers | Docker |
 | CI/CD | GitHub Actions |
 
-Only the ML libraries and pytest are installed at this stage. The other tools are added in their own milestones.
+Only the ML libraries, pytest and Ruff (dev) are installed at this stage. The other tools are added in their own milestones.
 
 ## Repository Structure
 
@@ -44,34 +44,42 @@ Only the ML libraries and pytest are installed at this stage. The other tools ar
 ├── pipelines/           # ML pipeline entry points (training, evaluation)
 ├── config/              # Configuration files
 ├── tests/               # pytest tests
+├── .env.example         # Configurable environment variables (all optional)
 ├── pyproject.toml       # Project metadata and dependencies
 ├── PROJECT_CONTEXT.md   # Source of truth for current project state
 └── CLAUDE.md            # Project rules and milestone roadmap
 ```
 
-## Setup
+## Development
 
-Requires Python 3.10+.
+Requires Python 3.10+. Run everything from the repository root.
 
 ```bash
+# Install (runtime + dev dependencies: pytest, ruff)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-```
 
-Run the tests:
-
-```bash
+# Run the tests
 pytest
-```
 
-Train and evaluate the model on the real dataset:
+# Lint and format checks (ruff)
+ruff check .
+ruff format --check .
 
-```bash
+# Apply fixes
+ruff check --fix .
+ruff format .
+
+# Train and evaluate on the real dataset
 python -m hotelprice.train
 ```
 
-This prints MAE, RMSE and R² on the test split and saves `model.json`, `preprocessor.joblib` and `metrics.json` to `models/` (git-ignored; override with `HOTELPRICE_MODEL_DIR`).
+Training prints MAE, RMSE and R² on the test split and saves `model.json`, `preprocessor.joblib` and `metrics.json` to `models/` (git-ignored).
+
+### Configuration
+
+Settings are read from environment variables and all have defaults, so none are required. See `.env.example` for the list (`HOTELPRICE_DATA_PATH`, `HOTELPRICE_PREPROCESSOR_PATH`, `HOTELPRICE_MODEL_DIR`, `HOTELPRICE_TEST_SIZE`, `HOTELPRICE_RANDOM_SEED`). The code does not load `.env` files itself; export the variables in your shell, e.g. `HOTELPRICE_RANDOM_SEED=1 python -m hotelprice.train`.
 
 ## Roadmap
 
