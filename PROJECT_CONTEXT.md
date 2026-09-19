@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry), 4.1 (BentoML service), 4.2 (Docker)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry), 4.1 (BentoML service), 4.2 (Docker), 5.1 (GitHub Actions CI, written and verified locally; not yet run on GitHub)
 - **In progress:** none
-- **Next:** Milestone 5.1 (GitHub Actions CI)
+- **Next:** Milestone 5.2 (GitHub Actions CD)
 
 ## Completed Milestones
 
@@ -99,6 +99,16 @@ Source of truth for the current project state. Update after every milestone.
 - **README:** new "Docker" section (workflow, curl example, variables, rebuild rule). `.env.example` documents `MODEL_ARTIFACT_DIR`.
 - No docker-compose, MLflow server container, registry push, GPU support or CI/CD. Training, MLflow logging and DVC are unchanged.
 
+### 5.1 GitHub Actions CI
+- **One new workflow, `.github/workflows/ci.yml`**, plus one fixture CSV. No new Python code, helper scripts, composite actions or dependencies. Triggers: `pull_request` and `push` to `main`. `permissions: contents: read`; concurrency group `ci-<workflow>-<ref>` with `cancel-in-progress: true`; no secrets. Actions pinned to majors (`actions/checkout@v4`, `actions/setup-python@v5`), Python `3.12` (same as the Dockerfile and the local environment) with pip caching keyed on `pyproject.toml`.
+- **Job `test`** (20 min timeout): `pip install -e ".[dev]"` → `ruff check .` → `ruff format --check .` (check only) → `pytest`.
+- **Job `ml-validation-and-docker`** (`needs: test`, 30 min timeout): install → `python -m hotelprice.train` → inline `python -c` check of `metrics.json` (file must exist; `mae`, `rmse`, `r2` finite) → `python -m hotelprice.select_model` → `python -m hotelprice.export_artifacts` → `docker build -t hotel-price-service:ci .` (never pushed) → container smoke test. Smoke test is one bash step: `docker run -d`, a `trap` on EXIT that prints `docker logs` if the step failed and always removes the container; wait for `/readyz` with a bounded loop (30 × 2 s); one valid `/predict` built from the first fixture row (response must have a finite float `predicted_room_price`); one invalid request (`{"hotel": "Taj"}`) that must return a 4xx.
+- **How CI gets data and artifacts without DVC:** the job-level env sets `HOTELPRICE_DATA_PATH=tests/fixtures/hotel_sample.csv`, `HOTELPRICE_MLFLOW_TRACKING_URI=sqlite:///<workspace>/mlflow.db` (fresh on every runner) and `HOTELPRICE_MODEL_DIR=<workspace>/ci-models` (so the tracked `models/metrics.json` is not overwritten). Training registers version 1 in that throwaway store, `select_model` moves `champion` to it, and `export_artifacts` writes `serving_artifacts/` for the `COPY` in the Dockerfile. No `dvc pull`, no remote, no real dataset.
+- **Fixture:** `tests/fixtures/hotel_sample.csv`, 300 rows = `df.sample(n=300, random_state=42)` of the real dataset (same 12 columns and dtypes, all categories present). It is plain Git, not in DVC, and `data/dataset.csv` was not touched (SHA-256 unchanged, `dvc status` up to date).
+- **Test changes so a fresh clone passes:** the two tests that read the real dataset were changed. `test_real_dataset` became `test_fixture_dataset` (same checks on the fixture: 240/60 split). In `test_smoke.py`, `test_fixture_schema` always runs and `test_dataset_schema` (real dataset header) is now skipped when `data/dataset.csv` is absent, so it still runs locally where the dataset exists. All other tests already used in-memory samples.
+- **README:** new "Continuous integration" section (jobs, when it runs, how CI gets data, local commands) and a CI status badge (repo URL `github.com/pushpendra-paswan/hotelprice` is the `origin` remote).
+- Not added: CD, image publishing, registry logins, DVC steps, schedules, Python matrix, coverage, scanners, notifications. Training, MLflow, DVC, BentoML and Docker behavior are unchanged.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -107,7 +117,7 @@ Target pipeline (built up across milestones):
 Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
         → MLflow Model Registry → BentoML → Docker → Local Serving
 
-Git → GitHub → GitHub Actions
+Git → GitHub → GitHub Actions (CI implemented in 5.1: tests + quality, ML validation on a fixture, Docker build + smoke test; CD in 5.2)
 ```
 
 Implemented so far (through Docker): Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking + Model Registry (inside `run_training`; `select_model` sets the alias), wired together by the DVC `train` stage, then BentoML (`service.py`) loading the champion from the registry. Data flow:
@@ -152,6 +162,8 @@ models:/<name>@champion → export_artifacts → serving_artifacts/{model.json, 
 ├── tests/test_select_model.py  # alias selection tests
 ├── tests/test_service.py    # BentoML service + export tests (temp MLflow store)
 ├── tests/conftest.py        # shared small-sample CSV fixture
+├── tests/fixtures/hotel_sample.csv  # 300-row sample of the real dataset (same schema), used by CI
+├── .github/workflows/ci.yml # CI: `test` and `ml-validation-and-docker` jobs
 ├── .env.example             # optional HOTELPRICE_* overrides (incl. MLflow) with defaults
 ├── pyproject.toml           # dependencies, pytest and ruff config
 ├── README.md
@@ -254,6 +266,10 @@ python -m hotelprice.export_artifacts                 # writes serving_artifacts
 docker build -t hotel-price-service:local .
 docker run --rm -p 3000:3000 hotel-price-service:local   # same /predict, /livez, /readyz on :3000
 
+# CI checks, run locally (no real dataset needed; see README "Continuous integration")
+ruff check . && ruff format --check . && pytest
+HOTELPRICE_DATA_PATH=tests/fixtures/hotel_sample.csv HOTELPRICE_MODEL_DIR=$PWD/ci-models python -m hotelprice.train   # in a scratch clone: writes mlflow.db
+
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
 # Training output dir: HOTELPRICE_MODEL_DIR=/tmp/models python -m hotelprice.train
@@ -348,6 +364,21 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - **No `mlflow.db` or data in the container:** the build context is filtered by `.dockerignore` and the Dockerfile copies only named paths. Checked inside the running container: `/app` contains only `hotelprice/`, `requirements-serving.txt` and `serving_artifacts/` (three files); `find /` for `mlflow.db`, `dataset.csv*`, `.env`, `mlartifacts` found nothing; `import mlflow` and `import dvc` both fail with `ModuleNotFoundError`; the run used no volume mounts. The MLflow-free loading path is also covered by a test that points the MLflow URI at a non-existent DB.
 - Existing MLflow-based local serving still works (the port-3001 service above loaded the champion from the real store).
 
+## Verification Results (Milestone 5.1)
+
+**Verified locally**
+- `ruff check .` and `ruff format --check .` clean; `dvc status`: up to date; dataset SHA-256 unchanged. In the main working tree (with the real dataset) the smoke and data-pipeline tests give 8 passed, 0 skipped.
+- Workflow YAML parses with PyYAML (triggers, `permissions: contents: read`, concurrency, two jobs, `needs: test`). `actionlint` is not installed, so it was not run.
+- **Fresh-clone reproduction** (temp `git clone` + the milestone's changed files copied in, new venv, no `data/dataset.csv`, no `mlflow.db`/`models/`/`serving_artifacts/`, no DVC remote). A small runner script (in the scratchpad, not in the repo) read `ci.yml` and executed every `run:` step literally with `bash -e`, with the job-level `env` applied:
+  - `test` job: install, `ruff check` (clean), `ruff format --check` (16 files formatted), `pytest` **25 passed, 1 skipped** (the real-dataset schema test) in about 110 s.
+  - `ml-validation-and-docker` job: training on the fixture (MAE 478.92, RMSE 586.10, R² 0.9690, registered version 1 in the fresh SQLite store), metrics check, `select_model` (champion → v1), `export_artifacts`, `docker build -t hotel-price-service:ci .` succeeded, container smoke test: `/readyz` ready, valid request returned `predicted_room_price` 6693.15, invalid request returned 400, container removed.
+- **Failure paths** (run against the same step text): metrics check exits 1 for a NaN `r2`, a missing key and a missing `metrics.json`; a smoke test forced to fail exits 1, prints the container logs and removes the container.
+- The temp clone and the `hotel-price-service:ci` image were deleted afterwards.
+
+**Not verified: can only be verified on GitHub**
+- The workflow has **not run on GitHub Actions** (nothing has been pushed). Unverified there: runner-specific behavior (`ubuntu-latest` toolchain, Docker and curl versions, port 3000 being free), pip caching (`cache-dependency-path: pyproject.toml`), `setup-python` 3.12 availability, the concurrency cancel, the fork behavior, total run time and the CI badge (it shows "no status" until a first run).
+- The local Docker build reused cached layers (the pip layer was already built); a cold `docker build` on a runner was not timed and will download the dependencies.
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
@@ -376,10 +407,14 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - The image is about 787 MB (scipy, pandas, sklearn, numpy dominate); no image scanning or multi-stage build was done.
 - `export_artifacts.py`, like `select_model.py`, runs on import and is meant to be run as a script only.
 - `bentoml serve` prints MLflow INFO lines and the agent hint at startup; the test run shows Pydantic/starlette deprecation warnings from BentoML internals.
+- **CI has not run on GitHub yet** (see Verification 5.1). CI runs on a 300-row fixture, so its metrics (MAE about 479) differ from the real-dataset metrics and prove the pipeline works, not model quality; the finite-metrics check has no quality threshold.
+- CI installs the full project (`pip install -e ".[dev]"`, including DVC, MLflow and BentoML) twice, once per job, so runs are slow (tests about 2 min locally, plus install time). Docker layers are not cached between runs.
+- The fixture must be regenerated by hand if the dataset schema changes; `test_dataset_schema` (skipped in CI) and `test_fixture_schema` are the checks that they stay in step.
+- `ci-models/` (job env `HOTELPRICE_MODEL_DIR`) is not git-ignored; it only exists on the runner or in a scratch clone.
 - Tests use `HotelPriceService.inner()` to get the plain class; this is BentoML SDK behavior that could change between versions.
 
 ## Next Milestone
 
-**5.1 GitHub Actions CI** (tests, code quality, ML validation, Docker build).
+**5.2 GitHub Actions CD** (versioned Docker image tagged with the Git commit SHA).
 
-**Note for Milestone 5 (CI/CD):** the real `serving_artifacts/` (and `mlflow.db`, `models/`, the dataset) are git-ignored/DVC-tracked, so a CI checkout has no artifacts to `COPY`. Before `docker build`, CI must produce `serving_artifacts/` itself: either train a small model on a tiny fixture dataset into a temporary MLflow store (`HOTELPRICE_*` env overrides, as the tests do), set the champion alias, and run `python -m hotelprice.export_artifacts`; or write a small fixture export directly. The Docker build step should then smoke-test the container (`/livez`, one `/predict`). Tag the image with the Git commit SHA in 5.2 (publishing is not part of 4.2).
+**Note for 5.2:** the CD workflow needs `serving_artifacts/` before `docker build`, and a checkout has none (it is git-ignored; the real `mlflow.db`, `models/` and dataset are not in Git either). It must rebuild `serving_artifacts/` **the same way CI does** (fixture CSV via `HOTELPRICE_DATA_PATH`, temporary SQLite MLflow store, `python -m hotelprice.train` → `select_model` → `export_artifacts`) and should reuse the same steps rather than diverge from them, so the published image is built the way CI validated it (only the tag changes, `:<commit SHA>` instead of `:ci`). Decide in 5.2 whether the published image should carry a fixture-trained model or a real one; the latter would need the real dataset (DVC) which CI deliberately avoids. Do not publish from pull requests or forks.

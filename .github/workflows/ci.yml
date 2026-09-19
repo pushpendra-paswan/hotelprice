@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint (ruff check)
+        run: ruff check .
+      - name: Format check (ruff format)
+        run: ruff format --check .
+      - name: Tests
+        run: pytest
+
+  ml-validation-and-docker:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # No DVC, real dataset or remote: training uses the small fixture CSV and a throwaway MLflow store.
+    env:
+      HOTELPRICE_DATA_PATH: tests/fixtures/hotel_sample.csv
+      HOTELPRICE_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
+      HOTELPRICE_MODEL_DIR: ${{ github.workspace }}/ci-models
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Train on the fixture
+        run: python -m hotelprice.train
+      - name: Check metrics
+        run: |
+          python -c "
+          import json, math, os
+          m = json.load(open(os.path.join(os.environ['HOTELPRICE_MODEL_DIR'], 'metrics.json')))
+          assert all(math.isfinite(m[k]) for k in ('mae', 'rmse', 'r2')), m
+          print(m)
+          "
+
+      - name: Set champion alias
+        run: python -m hotelprice.select_model
+      - name: Export serving artifacts
+        run: python -m hotelprice.export_artifacts
+
+      - name: Build Docker image
+        run: docker build -t hotel-price-service:ci .
+
+      - name: Container smoke test
+        run: |
+          set -euo pipefail
+          docker run -d --name hotel-price-ci -p 3000:3000 hotel-price-service:ci
+          trap 'status=$?; if [ "$status" -ne 0 ]; then docker logs hotel-price-ci; fi; docker rm -f hotel-price-ci' EXIT
+
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:3000/readyz > /dev/null; then ready=1; break; fi
+            sleep 2
+          done
+          [ "$ready" = 1 ] || { echo "Service did not become ready"; exit 1; }
+
+          # Valid request: the first fixture row without the target column.
+          row=$(python -c "
+          import json, pandas as pd
+          df = pd.read_csv('tests/fixtures/hotel_sample.csv')
+          print(json.dumps(df.drop(columns='room_price').iloc[0].to_dict()))
+          ")
+          curl -fs -X POST http://localhost:3000/predict -H 'Content-Type: application/json' -d "$row" \
+            | python -c "
+          import json, math, sys
+          p = json.load(sys.stdin)['predicted_room_price']
+          assert isinstance(p, float) and math.isfinite(p), p
+          print('prediction:', p)
+          "
+
+          # Invalid request (missing fields) must be rejected with a 4xx status.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:3000/predict \
+            -H 'Content-Type: application/json' -d '{"hotel": "Taj"}')
+          echo "invalid request status: $code"
+          [[ "$code" == 4* ]] || { echo "Expected a 4xx status"; exit 1; }

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import joblib
 import pandas as pd
 import pytest
@@ -50,9 +52,12 @@ def test_saved_preprocessor_matches_and_handles_unseen_category(pipeline_env):
     assert not out.drop(columns="city").isna().any().any()
 
 
-def test_real_dataset(tmp_path, monkeypatch):
+def test_fixture_dataset(tmp_path, monkeypatch):
+    # The CI fixture: 300 rows with the real dataset's schema (the real dataset is DVC-tracked).
+    fixture = Path(__file__).parent / "fixtures" / "hotel_sample.csv"
+    monkeypatch.setenv("HOTELPRICE_DATA_PATH", str(fixture))
     monkeypatch.setenv("HOTELPRICE_PREPROCESSOR_PATH", str(tmp_path / "preprocessor.joblib"))
     X_train, X_test, y_train, y_test, _ = run_data_pipeline()
-    assert X_train.shape == (1600, 11) and X_test.shape == (400, 11)
-    assert len(y_train) == 1600 and len(y_test) == 400
+    assert X_train.shape == (240, 11) and X_test.shape == (60, 11)
+    assert len(y_train) == 240 and len(y_test) == 60
     assert not X_train.isna().any().any() and not X_test.isna().any().any()

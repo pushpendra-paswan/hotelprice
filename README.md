@@ -1,5 +1,7 @@
 # Dynamic Hotel Price Prediction Platform
 
+[![CI](https://github.com/pushpendra-paswan/hotelprice/actions/workflows/ci.yml/badge.svg)](https://github.com/pushpendra-paswan/hotelprice/actions/workflows/ci.yml)
+
 An end-to-end ML/MLOps project that predicts hotel room prices and covers the full lifecycle: data versioning, training, experiment tracking, model registry, serving, containerization, and CI/CD. The ML is intentionally simple (XGBoost regression); the focus is the MLOps lifecycle.
 
 **Version 1 is local development and local serving only.**
@@ -43,7 +45,8 @@ Only the ML libraries, DVC, MLflow, pytest and Ruff (dev) are installed at this 
 ├── src/hotelprice/      # Python package: config, data pipeline, training, model selection, artifact export, BentoML service
 ├── pipelines/           # ML pipeline entry points (training, evaluation)
 ├── config/              # Configuration files
-├── tests/               # pytest tests
+├── tests/               # pytest tests; tests/fixtures/hotel_sample.csv is the small dataset used by CI
+├── .github/workflows/   # GitHub Actions CI (ci.yml)
 ├── Dockerfile, .dockerignore, requirements-serving.txt   # serving image (needs serving_artifacts/)
 ├── dvc.yaml             # DVC pipeline (train stage); dvc.lock pins its inputs/outputs
 ├── .env.example         # Configurable environment variables (all optional)
@@ -237,6 +240,35 @@ dvc metrics diff       # compare metrics with the last Git commit (or pass two r
 ```
 
 To change the dataset: edit it, run `dvc add data/dataset.csv`, then `git add data/dataset.csv.dvc` and commit, and `dvc push` to upload the new version.
+
+### Continuous integration (GitHub Actions)
+
+`.github/workflows/ci.yml` runs on every pull request and on every push to `main`. A new push to the same branch cancels the run in progress. It needs no secrets and no setup, so it also works on forks.
+
+CI only has what is in Git, so it never uses DVC or the real dataset (`data/dataset.csv`, `mlflow.db`, `models/` and `serving_artifacts/` are not in Git). It uses `tests/fixtures/hotel_sample.csv` instead: a fixed-seed sample of 300 rows of the real dataset with the same columns and dtypes. The fixture is plain Git, not DVC-tracked.
+
+| Job | What it does |
+|-----|--------------|
+| `test` | `pip install -e ".[dev]"`, `ruff check .`, `ruff format --check .`, `pytest` |
+| `ml-validation-and-docker` (after `test` passes) | trains on the fixture into a temporary MLflow SQLite store and fails if `metrics.json` is missing or MAE, RMSE or R² is not finite; sets the `champion` alias; exports `serving_artifacts/`; builds `hotel-price-service:ci` (not pushed); starts the container, waits for `/readyz`, checks that one valid `/predict` returns a numeric price and one invalid request gets a 4xx, then stops it (container logs are printed on failure) |
+
+Run the same checks locally (from a clean clone, without the real dataset, in a virtual environment):
+
+```bash
+pip install -e ".[dev]"
+ruff check . && ruff format --check . && pytest
+
+# ML validation and Docker build, using the fixture and a throwaway MLflow store
+export HOTELPRICE_DATA_PATH=tests/fixtures/hotel_sample.csv
+export HOTELPRICE_MLFLOW_TRACKING_URI=sqlite:///$PWD/mlflow.db   # use a temp dir to keep your own runs separate
+export HOTELPRICE_MODEL_DIR=$PWD/ci-models
+python -m hotelprice.train
+python -m hotelprice.select_model
+python -m hotelprice.export_artifacts
+docker build -t hotel-price-service:ci .
+```
+
+Note that this writes to `mlflow.db`, `mlartifacts/` and `serving_artifacts/` in the working directory, so run it in a scratch clone if you already have your own MLflow runs. The container smoke test is the last step of the workflow file; run the container as in the Docker section and call `/predict` with a fixture row.
 
 ### Configuration
 
