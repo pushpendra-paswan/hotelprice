@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning)
 - **In progress:** none
-- **Next:** Milestone 2.2 (DVC dataset versioning)
+- **Next:** Milestone 3.1 (MLflow experiment tracking)
 
 ## Completed Milestones
 
@@ -39,6 +39,15 @@ Source of truth for the current project state. Update after every milestone.
 - **Commits:** two focused commits (`Add Ruff for linting and formatting`, `Document development commands and add .env.example`) plus this context update. Nothing was pushed.
 - No DVC, MLflow, BentoML, Docker or CI/CD.
 
+### 2.2 DVC Dataset Versioning
+- **DVC 3.67.1** added to `[project.dependencies]` (`dvc>=3.0`); `dvc init` config committed (`.dvc/config`, `.dvcignore`). Analytics disabled via `core.analytics false` in `.dvc/config`.
+- **Dataset tracked by DVC:** `data/dataset.csv` was removed from the Git index (`git rm --cached`) and added with `dvc add`. Git now holds only `data/dataset.csv.dvc` and `data/.gitignore` (`/dataset.csv`). The file is untouched (SHA-256 still `afeb014d…82cf2`; DVC md5 `b96052c3…`).
+- **Local remote outside the repo:** `localstorage` at `/home/pushpendra/dvc-remotes/hotelprice`, added with `dvc remote add -d --local`, so both the remote and the default-remote setting live in `.dvc/config.local` (git-ignored, never committed). Each developer creates their own remote; steps are in the README.
+- **`dvc.yaml`:** one `train` stage. `cmd: python -m hotelprice.train`; deps: `data/dataset.csv`, `config.py`, `data_pipeline.py`, `train.py`; outs: `models/model.json`, `models/preprocessor.joblib`; metrics: `models/metrics.json` with `cache: false`. `dvc.lock` is committed. No `params.yaml`, no code changes.
+- **`.gitignore`:** `models/` became `models/*` plus `!models/metrics.json`, so the metrics file is committed (needed for `dvc metrics diff` across Git revisions) while the model and preprocessor stay ignored and DVC-cached. The stale "dataset is not ignored yet" comment was fixed.
+- **README:** new "Data versioning and pipeline (DVC)" section covering remote setup, `dvc pull`, `dvc push`, `dvc repro`, `dvc checkout`, `dvc metrics show/diff`, and how to change the dataset.
+- **Commits:** `Add DVC dependency and initialize DVC`, `Track dataset with DVC instead of Git`, `Add DVC train stage and track metrics in Git`, `Document DVC setup and commands in README`, plus this context update. Nothing was pushed to GitHub.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -50,7 +59,7 @@ Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
 Git → GitHub → GitHub Actions
 ```
 
-Implemented so far: Dataset → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`). Data flow:
+Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`), wired together by the DVC `train` stage. Data flow:
 
 ```text
 data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit(train) → transform(train, test)
@@ -63,12 +72,15 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 
 ```text
 .
-├── data/dataset.csv         # existing dataset, 2,000 rows, read-only
+├── data/dataset.csv         # existing dataset, 2,000 rows, read-only; DVC-tracked (git-ignored)
+├── data/dataset.csv.dvc     # DVC pointer to the dataset (in Git)
+├── dvc.yaml, dvc.lock       # DVC pipeline: single `train` stage and its pinned hashes
+├── .dvc/config              # DVC config (in Git); .dvc/config.local holds the machine-specific remote
 ├── src/hotelprice/          # Python package
 │   ├── config.py            # column lists + env-driven settings
 │   ├── data_pipeline.py     # run_data_pipeline(): load, split, preprocess, save
 │   └── train.py             # run_training(): train, evaluate, save model + metrics
-├── models/                  # training output (git-ignored, created by train)
+├── models/                  # training output; model/preprocessor DVC-cached, metrics.json in Git
 ├── pipelines/               # empty (.gitkeep); ML pipeline entry points
 ├── config/                  # empty (.gitkeep); configuration files
 ├── tests/test_smoke.py      # package import + dataset schema tests
@@ -116,7 +128,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 
 - **Single `pyproject.toml`** (no requirements files), with a `src/` layout and an installable `hotelprice` package. Runtime dependencies are in `[project.dependencies]` and pytest is in the `dev` extra.
 - **Dependency bounds are lower bounds only** (`>=`). Exact reproducibility comes later, for example via a lock or the Docker image.
-- **`.gitignore` does not ignore `data/dataset.csv`.** Data files will be handled by DVC in milestone 2.2. It ignores models, `mlruns/`, `mlflow.db`, `bentoml/`, `.venv/`, `.env`, and the DVC cache.
+- **The dataset is DVC-tracked** (since 2.2): `data/.gitignore` (written by DVC) ignores it, and the root `.gitignore` also ignores models except `models/metrics.json`, `mlruns/`, `mlflow.db`, `bentoml/`, `.venv/`, `.env`, and the DVC cache/local config.
 - **Configuration** lives in `config/` and secrets come from environment variables. Nothing is configured yet.
 
 ## Current Configuration
@@ -124,6 +136,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 - Python 3.12.3 (project requires >=3.10).
 - Resolved versions in the verified environment: pandas 3.0.6, numpy 2.5.3, scikit-learn 1.9.1, xgboost 3.4.1, pytest 9.1.1.
 - pytest: `testpaths = ["tests"]` in `pyproject.toml`.
+- DVC 3.67.1: one default remote `localstorage` (directory outside the repo, set in git-ignored `.dvc/config.local`); `core.analytics = false`.
 - Ruff: `line-length = 100`, lint rules `E, F, I, UP, B`, `src = ["src", "tests"]` in `pyproject.toml`.
 
 ## Commands
@@ -143,6 +156,16 @@ python -m hotelprice.data_pipeline
 
 # Train and evaluate on the real dataset (saves models/model.json, preprocessor.joblib, metrics.json)
 python -m hotelprice.train
+
+# DVC (one-time remote setup per clone; the path is machine-specific and stays out of Git)
+mkdir -p ~/dvc-remotes/hotelprice
+dvc remote add -d --local localstorage ~/dvc-remotes/hotelprice
+dvc pull            # fetch dataset (+ models) from the remote
+dvc repro           # run the train stage (skips if nothing changed)
+dvc push            # upload DVC-tracked data to the remote
+dvc checkout        # after `git checkout <commit>`, restore that commit's data/models
+dvc metrics show    # print models/metrics.json
+dvc metrics diff    # compare workspace (or two revisions) metrics
 
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
@@ -184,6 +207,23 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - `pytest`: 11 passed in the working tree.
 - **Clean clone:** `git clone` into a temp directory, fresh venv, `pip install -e ".[dev]"`, then `pip check` (no broken requirements), `pytest` (11 passed), ruff check/format (clean), and `python -m hotelprice.train` all succeeded with no fixes needed. Metrics were identical to Milestone 1.2 (MAE 387.36, RMSE 495.51, R² 0.9772), `models/` contained `model.json`, `preprocessor.joblib` and `metrics.json`, and `git status` in the clone stayed clean. The temp clone was deleted afterwards.
 
+## Verification Results (Milestone 2.2)
+
+- `dvc push` uploaded the dataset; after training, the model and preprocessor. `dvc status -c` reports cache and remote in sync (3 objects: dataset, model, preprocessor).
+- **`dvc repro`:** first run trained (MAE 387.36, RMSE 495.51, R² 0.9772, identical to Milestone 1.2) and wrote `dvc.lock`; the second run printed `Stage 'train' didn't change, skipping` / `Data and pipelines are up to date.`
+- **Versioning demo** (temporary branch `demo-dataset-versioning`, deleted afterwards with `git branch -D`; its two commits were never on `main`): the dataset was replaced by its first 1,200 rows (`head -n 1201`), then `dvc add`, commit of the `.dvc` change, `dvc repro`, commit of `dvc.lock`/`metrics.json`.
+
+  | Dataset | MAE | RMSE | R² |
+  |---------|-----|------|-----|
+  | Original (2,000 rows) | 387.36 | 495.51 | 0.9772 |
+  | Demo (1,200 rows) | 398.92 | 493.57 | 0.9816 |
+
+  `dvc metrics diff main` showed those differences. `git checkout <original commit>` + `dvc checkout` restored the 2,001-line CSV (SHA-256 matches the original) and the original metrics; switching back to the demo branch + `dvc checkout` restored the 1,201-line CSV and the demo metrics.
+- **Cleanup:** back on `main`, `dvc checkout` restored the real dataset (SHA-256 `afeb014d…82cf2`, `cmp` identical to a backup taken before the demo). `dvc gc -w -c` removed the demo objects from the local cache and the remote. `git status` is clean, `git branch` shows only `main`, and the log has no demo commits.
+- **`git ls-files`:** `data/dataset.csv.dvc`, `data/.gitignore`, `dvc.yaml`, `dvc.lock`, `.dvc/config`, `.dvcignore` and `models/metrics.json` are tracked. `data/dataset.csv`, `models/model.json`, `models/preprocessor.joblib`, `artifacts/`, `.dvc/config.local` and `.dvc/cache` are not.
+- `pytest`: 11 passed; `ruff check .` and `ruff format --check .` pass.
+- **Clean clone** (temp dir, fresh venv, `pip install -e ".[dev]"`, `pip check` clean): before configuring a remote, `dvc pull` fails with missing files, as expected. After `dvc remote add -d --local` pointing at a copy of the store, `dvc pull` fetched the dataset (SHA-256 matches) and models, `dvc status` was up to date, `dvc repro -f` retrained with the same metrics, `pytest` gave 11 passed, ruff was clean and `git status` stayed clean. The temp clone and remote copy were deleted.
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
@@ -192,8 +232,11 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - Metrics are from a single train/test split with untuned hyperparameters; no cross-validation. The test set is not used for model selection.
 - `run_data_pipeline()` writes the preprocessor file on every call, so it has a side effect (tests redirect it to a temp path).
 - `test_real_dataset` reads the real dataset (or `HOTELPRICE_DATA_PATH`) and expects 2,000 rows at the default 0.2 split.
+- **DVC remote is per-machine.** `.dvc/config.local` is not committed, so a fresh clone cannot `dvc pull` until a remote is added. The remote is a local directory, so the dataset only reaches another developer if they get a copy of that directory (e.g. a shared folder); there is no cloud remote in Version 1.
+- `run_data_pipeline()` also writes `artifacts/preprocessor.joblib`, which is not a declared DVC output (it is git-ignored and duplicated in `models/`), so it is not versioned.
+- `dvc gc` deletes cached objects not referenced by the current workspace (`-w`) or other revisions; use it carefully once real history exists.
 - The dataset had to be sourced from outside the repo (see Dataset). If a different canonical dataset exists, replace it deliberately.
 
 ## Next Milestone
 
-**2.2 DVC dataset versioning**: track `data/dataset.csv` with local DVC and stop tracking the CSV in Git, per the milestone prompt.
+**3.1 MLflow experiment tracking**: log parameters, metrics and artifacts for each training run to a local MLflow tracking store, per the milestone prompt.
