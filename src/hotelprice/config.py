@@ -56,3 +56,20 @@ def get_test_size() -> float:
 def get_random_seed() -> int:
     """Seed for the train/test split and the model (env: HOTELPRICE_RANDOM_SEED, default: 42)."""
     return int(os.environ.get("HOTELPRICE_RANDOM_SEED", "42"))
+
+
+def get_mlflow_tracking_uri() -> str:
+    """MLflow backend store (env: HOTELPRICE_MLFLOW_TRACKING_URI, default: local mlflow.db)."""
+    return os.environ.get(
+        "HOTELPRICE_MLFLOW_TRACKING_URI", f"sqlite:///{PROJECT_ROOT / 'mlflow.db'}"
+    )
+
+
+def get_mlflow_artifact_dir() -> Path:
+    """MLflow artifact directory (env: HOTELPRICE_MLFLOW_ARTIFACT_DIR, default: mlartifacts/)."""
+    return Path(os.environ.get("HOTELPRICE_MLFLOW_ARTIFACT_DIR", PROJECT_ROOT / "mlartifacts"))
+
+
+def get_mlflow_experiment_name() -> str:
+    """MLflow experiment (env: HOTELPRICE_MLFLOW_EXPERIMENT, default: hotel-price-prediction)."""
+    return os.environ.get("HOTELPRICE_MLFLOW_EXPERIMENT", "hotel-price-prediction")

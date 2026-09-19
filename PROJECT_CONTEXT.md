@@ -4,9 +4,9 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking)
 - **In progress:** none
-- **Next:** Milestone 3.1 (MLflow experiment tracking)
+- **Next:** Milestone 3.2 (MLflow Model Registry)
 
 ## Completed Milestones
 
@@ -48,6 +48,22 @@ Source of truth for the current project state. Update after every milestone.
 - **README:** new "Data versioning and pipeline (DVC)" section covering remote setup, `dvc pull`, `dvc push`, `dvc repro`, `dvc checkout`, `dvc metrics show/diff`, and how to change the dataset.
 - **Commits:** `Add DVC dependency and initialize DVC`, `Track dataset with DVC instead of Git`, `Add DVC train stage and track metrics in Git`, `Document DVC setup and commands in README`, plus this context update. Nothing was pushed to GitHub.
 
+### 3.1 MLflow Experiment Tracking
+- **MLflow 3.16.1** added to `[project.dependencies]` (`mlflow>=3.0`).
+- **Logging lives directly in `run_training()`** (`train.py`), as plain numbered steps after the existing save step. No tracking module or wrapper. Training command is unchanged; `models/model.json`, `preprocessor.joblib` and `metrics.json` are still written first, so the DVC stage works as before. `dvc.yaml` needed no change (`dvc.lock` only got new dependency hashes for `config.py`/`train.py`).
+- **Tracking configuration** (`config.py`, listed in `.env.example`): `HOTELPRICE_MLFLOW_TRACKING_URI` (default `sqlite:///<repo>/mlflow.db`), `HOTELPRICE_MLFLOW_ARTIFACT_DIR` (default `<repo>/mlartifacts`), `HOTELPRICE_MLFLOW_EXPERIMENT` (default `hotel-price-prediction`). SQLite backend (not the file store) so the Model Registry works in 3.2. `mlflow.db`, `mlartifacts/` and `mlruns/` were already in `.gitignore`.
+- **Experiment creation:** if the experiment does not exist, it is created with `artifact_location` = the artifact dir; otherwise it is reused (an existing experiment keeps its original artifact location).
+- **What each run logs:**
+  - Params: all `XGB_PARAMS` (`n_estimators`, `learning_rate`, `max_depth`, `subsample`, `colsample_bytree`, `n_jobs`), `random_seed`, `test_size`, `target`, `features` (comma-joined), `n_rows`, `n_train_rows`, `n_test_rows`.
+  - Metrics: `mae`, `rmse`, `r2` (test set).
+  - Tags: `dataset_path`, `dataset_dvc_md5` (read from `data/dataset.csv.dvc`, `unknown` if there is no `.dvc` file), `git_commit` (`git rev-parse HEAD`, `unknown` if git fails). The commit is the last commit, so it can be stale if the working tree has uncommitted changes; no dirty flag is logged.
+  - Model: `mlflow.xgboost.log_model(model, name="model")`.
+  - Preprocessor: run artifact `preprocessor/preprocessor.joblib`.
+- **MLflow 3 stores the model as a "logged model"**, linked to the run and saved under `mlartifacts/models/m-<id>/artifacts/` (with `MLmodel`, `model.ubj`, env files), not under the run's own artifact folder. `runs:/<run_id>/model` still resolves to it. The preprocessor stays in the run's artifacts (`mlartifacts/<run_id>/artifacts/preprocessor/`).
+- **Tests:** `train_env` in `tests/test_train.py` now points MLflow at a temp SQLite DB, artifact dir and experiment name. Two new tests: one run has the expected params, metrics, tags, linked model and preprocessor artifact, and both load back and predict; two runs land in one experiment.
+- **README:** new "Experiment tracking (MLflow)" section (what is logged, train, start the UI, load a model, env vars).
+- No tuning, autologging, extra models, Model Registry, BentoML, Docker or CI/CD.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -59,13 +75,14 @@ Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
 Git → GitHub → GitHub Actions
 ```
 
-Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`), wired together by the DVC `train` stage. Data flow:
+Implemented so far: Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking (inside `run_training`), wired together by the DVC `train` stage. Data flow:
 
 ```text
 data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit(train) → transform(train, test)
                                                         └→ artifacts/preprocessor.joblib
                                                         → XGBRegressor.fit → predict(test) → MAE/RMSE/R²
-                                                        └→ models/{model.json, preprocessor.joblib, metrics.json}
+                                                        ├→ models/{model.json, preprocessor.joblib, metrics.json}
+                                                        └→ MLflow run (mlflow.db + mlartifacts/): params, metrics, tags, model, preprocessor
 ```
 
 ## Repository Structure
@@ -79,7 +96,8 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 ├── src/hotelprice/          # Python package
 │   ├── config.py            # column lists + env-driven settings
 │   ├── data_pipeline.py     # run_data_pipeline(): load, split, preprocess, save
-│   └── train.py             # run_training(): train, evaluate, save model + metrics
+│   └── train.py             # run_training(): train, evaluate, save model + metrics, log to MLflow
+├── mlflow.db, mlartifacts/  # local MLflow store (git-ignored, created on first run)
 ├── models/                  # training output; model/preprocessor DVC-cached, metrics.json in Git
 ├── pipelines/               # empty (.gitkeep); ML pipeline entry points
 ├── config/                  # empty (.gitkeep); configuration files
@@ -87,7 +105,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 ├── tests/test_data_pipeline.py  # data pipeline tests
 ├── tests/test_train.py      # training tests (small sample)
 ├── tests/conftest.py        # shared small-sample CSV fixture
-├── .env.example             # optional HOTELPRICE_* overrides with defaults
+├── .env.example             # optional HOTELPRICE_* overrides (incl. MLflow) with defaults
 ├── pyproject.toml           # dependencies, pytest and ruff config
 ├── README.md
 ├── PROJECT_CONTEXT.md
@@ -122,6 +140,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 - **Ordinal encoding for categoricals** (`OrdinalEncoder`), numerics passed through unscaled. XGBoost is tree-based, so scaling is unnecessary, and the low cardinality (max 7) makes integer codes cheap and adequate. This avoids one-hot column growth and keeps feature names identical to the raw columns.
 - **Unseen categories at inference encode to NaN** (`handle_unknown="use_encoded_value", unknown_value=np.nan`), which XGBoost treats as missing, so serving does not crash on new values.
 - **The preprocessor is fit on the training split only**, returned by `run_data_pipeline()`, and saved with joblib to `artifacts/preprocessor.joblib` (git-ignored, path via `HOTELPRICE_PREPROCESSOR_PATH`), so inference can load the exact fitted transformation (no leakage). Registering it with the model is for the MLflow milestones.
+- **MLflow tracking uses explicit calls** (`log_params`, `log_metrics`, `set_tags`, `log_model`, `log_artifact`), not autologging, so what is logged is visible in `train.py`.
 - **Plain sequential code, one pipeline file** (per CLAUDE.md): no helper functions or dataclass; the pipeline reads its settings from config/env rather than function arguments, and tests override them with env vars.
 - **Configuration via environment variables** with defaults: `HOTELPRICE_DATA_PATH` (default `data/dataset.csv`), `HOTELPRICE_TEST_SIZE` (0.2), `HOTELPRICE_RANDOM_SEED` (42). Function arguments override the env values.
 - **No validation or cleaning step**: the data has no missing or duplicate values. A missing column fails with a pandas `KeyError` on selection.
@@ -137,6 +156,7 @@ data/dataset.csv → read_csv → train_test_split (seeded) → preprocessor.fit
 - Resolved versions in the verified environment: pandas 3.0.6, numpy 2.5.3, scikit-learn 1.9.1, xgboost 3.4.1, pytest 9.1.1.
 - pytest: `testpaths = ["tests"]` in `pyproject.toml`.
 - DVC 3.67.1: one default remote `localstorage` (directory outside the repo, set in git-ignored `.dvc/config.local`); `core.analytics = false`.
+- MLflow 3.16.1: tracking URI `sqlite:///<repo>/mlflow.db`, artifacts in `<repo>/mlartifacts`, experiment `hotel-price-prediction` (all overridable, see `.env.example`). Resolved versions otherwise unchanged; `pip check` clean.
 - Ruff: `line-length = 100`, lint rules `E, F, I, UP, B`, `src = ["src", "tests"]` in `pyproject.toml`.
 
 ## Commands
@@ -167,9 +187,14 @@ dvc checkout        # after `git checkout <commit>`, restore that commit's data/
 dvc metrics show    # print models/metrics.json
 dvc metrics diff    # compare workspace (or two revisions) metrics
 
+# MLflow: training logs a run each time; open the UI at http://127.0.0.1:5000
+python -m hotelprice.train
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
 # Training output dir: HOTELPRICE_MODEL_DIR=/tmp/models python -m hotelprice.train
+# MLflow: HOTELPRICE_MLFLOW_TRACKING_URI, HOTELPRICE_MLFLOW_ARTIFACT_DIR, HOTELPRICE_MLFLOW_EXPERIMENT
 ```
 
 ## Verification Results (Milestone 0.1)
@@ -224,11 +249,25 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - `pytest`: 11 passed; `ruff check .` and `ruff format --check .` pass.
 - **Clean clone** (temp dir, fresh venv, `pip install -e ".[dev]"`, `pip check` clean): before configuring a remote, `dvc pull` fails with missing files, as expected. After `dvc remote add -d --local` pointing at a copy of the store, `dvc pull` fetched the dataset (SHA-256 matches) and models, `dvc status` was up to date, `dvc repro -f` retrained with the same metrics, `pytest` gave 11 passed, ruff was clean and `git status` stayed clean. The temp clone and remote copy were deleted.
 
+## Verification Results (Milestone 3.1)
+
+- `ruff check .` and `ruff format --check .` pass. `pytest`: 13 passed (11 previous + 2 MLflow tests, about 35 s in total; the real `mlflow.db` was not touched by tests).
+- **Runs:** `dvc repro` (deps changed, so it retrained; the second `dvc repro` skipped the stage) plus two `python -m hotelprice.train` runs gave 3 runs, all `FINISHED`, in the same experiment `hotel-price-prediction`. Metrics identical to earlier milestones (MAE 387.36, RMSE 495.51, R² 0.9772). `models/metrics.json` is unchanged in Git.
+- **Logged values** (checked via `mlflow.search_runs`): 13 params (`n_rows` 2000, train 1600, test 400, seed 42, test size 0.2, the 6 XGBoost params, target, features), 3 metrics, tags `git_commit` = `2094583…` and `dataset_dvc_md5` = `b96052c3…` (matches `dataset.csv.dvc`).
+- **MLflow UI:** `mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000` served HTTP 200. Its REST API (`/api/2.0/mlflow/runs/search`, logged-models search) returned the 3 runs with params and metrics and the logged models. It was checked through the API, not by looking at the pages in a browser. The UI process was stopped afterwards.
+- **Load back:** `mlflow.xgboost.load_model("runs:/<run_id>/model")` and the downloaded `preprocessor/preprocessor.joblib` predicted for 3 raw dataset rows: 5867, 15160, 7466 vs actual 5744, 15168, 7002.
+- `git status`: `mlflow.db` and `mlartifacts/` are ignored; changes are `.env.example`, `dvc.lock`, `pyproject.toml`, `config.py`, `train.py`, `tests/test_train.py`, README and this file.
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
 - `pipelines/` and `config/` are placeholders; settings currently live in `src/hotelprice/config.py` and env vars.
-- The preprocessor is saved locally only; logging/registering it with the model is left to the MLflow milestones.
+- The preprocessor is logged as a run artifact, separate from the model; registering the model and preprocessor together is left to 3.2.
+- `mlflow.db` and `mlartifacts/` are local and git-ignored, and are not DVC-tracked; each clone has its own run history. Runs from every `dvc repro` or manual train are added, so the store grows.
+- Because the `git_commit` tag is `HEAD`, a run from an uncommitted working tree carries the previous commit's SHA.
+- The MLflow artifact dir only applies at experiment creation. If `mlflow.db` is deleted but `mlartifacts/` is kept, old artifacts are orphaned.
+- MLflow prints INFO lines and an agent-hint message on start; `MLFLOW_DISABLE_AGENT_HINT=1` silences the hint.
+- The test suite is slower with MLflow (each training test creates a SQLite store).
 - Metrics are from a single train/test split with untuned hyperparameters; no cross-validation. The test set is not used for model selection.
 - `run_data_pipeline()` writes the preprocessor file on every call, so it has a side effect (tests redirect it to a temp path).
 - `test_real_dataset` reads the real dataset (or `HOTELPRICE_DATA_PATH`) and expects 2,000 rows at the default 0.2 split.
@@ -239,4 +278,4 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 
 ## Next Milestone
 
-**3.1 MLflow experiment tracking**: log parameters, metrics and artifacts for each training run to a local MLflow tracking store, per the milestone prompt.
+**3.2 MLflow Model Registry**: register the trained model (and its preprocessor) in the MLflow Model Registry on the same SQLite store, per the milestone prompt.

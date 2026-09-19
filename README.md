@@ -33,7 +33,7 @@ Git → GitHub → GitHub Actions (tests, code quality, ML validation,
 | Containers | Docker |
 | CI/CD | GitHub Actions |
 
-Only the ML libraries, DVC, pytest and Ruff (dev) are installed at this stage. The other tools are added in their own milestones.
+Only the ML libraries, DVC, MLflow, pytest and Ruff (dev) are installed at this stage. The other tools are added in their own milestones.
 
 ## Repository Structure
 
@@ -76,7 +76,39 @@ ruff format .
 python -m hotelprice.train
 ```
 
-Training prints MAE, RMSE and R² on the test split and saves `model.json`, `preprocessor.joblib` and `metrics.json` to `models/` (git-ignored).
+Training prints MAE, RMSE and R² on the test split and saves `model.json`, `preprocessor.joblib` and `metrics.json` to `models/` (git-ignored except `metrics.json`) and logs the run to MLflow.
+
+### Experiment tracking (MLflow)
+
+Every training run (`python -m hotelprice.train`, or the DVC `train` stage) is logged to a local MLflow tracking store: a SQLite database (`mlflow.db`) plus an artifact directory (`mlartifacts/`), both git-ignored. SQLite is used instead of the plain file store so the Model Registry works in the next milestone. Runs go to the experiment `hotel-price-prediction`.
+
+Each run logs:
+
+- **Parameters:** the XGBoost hyperparameters, `random_seed`, `test_size`, `target`, `features`, `n_rows`, `n_train_rows`, `n_test_rows`
+- **Metrics:** `mae`, `rmse`, `r2` (test set)
+- **Tags:** `dataset_path`, `dataset_dvc_md5` (from `data/dataset.csv.dvc`), `git_commit`
+- **Model:** the XGBoost model (`mlflow.xgboost.log_model`, name `model`)
+- **Preprocessor:** `preprocessor/preprocessor.joblib` as a run artifact
+
+`models/model.json`, `models/preprocessor.joblib` and `models/metrics.json` are still written, so the DVC stage is unchanged.
+
+```bash
+# Train (logs a new run each time)
+python -m hotelprice.train
+
+# Open the MLflow UI at http://127.0.0.1:5000 (run from the repository root)
+mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+
+Load a logged model back (replace `<run_id>` with a run ID from the UI):
+
+```python
+import mlflow, mlflow.xgboost
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
+model = mlflow.xgboost.load_model("runs:/<run_id>/model")
+```
+
+MLflow settings (all optional): `HOTELPRICE_MLFLOW_TRACKING_URI` (default `sqlite:///<repo>/mlflow.db`), `HOTELPRICE_MLFLOW_ARTIFACT_DIR` (default `<repo>/mlartifacts`), `HOTELPRICE_MLFLOW_EXPERIMENT` (default `hotel-price-prediction`). The artifact directory only applies when the experiment is first created; an existing experiment keeps its original location. If you change the tracking URI, start the UI with the same `--backend-store-uri`.
 
 ### Data versioning and pipeline (DVC)
 
@@ -104,7 +136,7 @@ To change the dataset: edit it, run `dvc add data/dataset.csv`, then `git add da
 
 ### Configuration
 
-Settings are read from environment variables and all have defaults, so none are required. See `.env.example` for the list (`HOTELPRICE_DATA_PATH`, `HOTELPRICE_PREPROCESSOR_PATH`, `HOTELPRICE_MODEL_DIR`, `HOTELPRICE_TEST_SIZE`, `HOTELPRICE_RANDOM_SEED`). The code does not load `.env` files itself; export the variables in your shell, e.g. `HOTELPRICE_RANDOM_SEED=1 python -m hotelprice.train`.
+Settings are read from environment variables and all have defaults, so none are required. See `.env.example` for the list (`HOTELPRICE_DATA_PATH`, `HOTELPRICE_PREPROCESSOR_PATH`, `HOTELPRICE_MODEL_DIR`, `HOTELPRICE_TEST_SIZE`, `HOTELPRICE_RANDOM_SEED`, plus the three `HOTELPRICE_MLFLOW_*` variables above). The code does not load `.env` files itself; export the variables in your shell, e.g. `HOTELPRICE_RANDOM_SEED=1 python -m hotelprice.train`.
 
 ## Roadmap
 
