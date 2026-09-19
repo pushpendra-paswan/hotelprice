@@ -4,9 +4,10 @@ Source of truth for the current project state. Update after every milestone.
 
 ## Current Status
 
-- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry), 4.1 (BentoML service), 4.2 (Docker), 5.1 (GitHub Actions CI, written and verified locally; not yet run on GitHub)
+- **Completed:** Milestones 0.1 (project definition and structure), 1.1 (dataset and data pipeline), 1.2 (XGBoost training and evaluation), 2.1 (Git and project quality), 2.2 (DVC dataset versioning), 3.1 (MLflow experiment tracking), 3.2 (MLflow Model Registry), 4.1 (BentoML service), 4.2 (Docker), 5.1 (GitHub Actions CI, written and verified locally; not yet run on GitHub), 5.2 (GitHub Actions CD, written and verified locally; not yet run on GitHub)
+- **All Version 1 milestones are complete.** Nothing has been pushed to GitHub, so neither workflow has run there yet.
 - **In progress:** none
-- **Next:** Milestone 5.2 (GitHub Actions CD)
+- **Next:** none (see "Version 1 Completion Checklist")
 
 ## Completed Milestones
 
@@ -109,6 +110,26 @@ Source of truth for the current project state. Update after every milestone.
 - **README:** new "Continuous integration" section (jobs, when it runs, how CI gets data, local commands) and a CI status badge (repo URL `github.com/pushpendra-paswan/hotelprice` is the `origin` remote).
 - Not added: CD, image publishing, registry logins, DVC steps, schedules, Python matrix, coverage, scanners, notifications. Training, MLflow, DVC, BentoML and Docker behavior are unchanged.
 
+### 5.2 GitHub Actions CD
+- **One new file, `.github/workflows/cd.yml`** (workflow `CD`), one job `deliver` (40 min timeout). No new Python code, helper scripts, composite/reusable workflows or dependencies. `ci.yml` only got a comment saying its ML steps and smoke test must stay in sync with `cd.yml` (the same comment is in `cd.yml`).
+- **Trigger conditions:** `workflow_run` on workflow `CI`, `types: [completed]`, `branches: [main]`, plus `workflow_dispatch`. The job `if` requires either a manual run on `refs/heads/main`, or `workflow_run.conclusion == 'success'` **and** `workflow_run.event == 'push'`. The `event == 'push'` check matters: the `branches` filter matches the head branch name, so a fork PR from a branch called `main` would otherwise pass it. So CD never publishes for pull requests, forks or failed CI. `workflow_run` executes the default branch's workflow file; a comment in the file explains why publishing is safe.
+- **Commit:** `COMMIT_SHA = workflow_run.head_sha || github.sha`, and `actions/checkout` uses `ref: ${{ env.COMMIT_SHA }}`, so the exact commit CI validated is built, not the current branch head.
+- **Permissions / safety:** `contents: read`, `packages: write` only; concurrency group `cd` with `cancel-in-progress: false` (deliveries queue rather than race); only the built-in `GITHUB_TOKEN`, no other secrets.
+- **Steps:** same as the CI `ml-validation-and-docker` job: `setup-python` 3.12 (pip cache), `pip install -e ".[dev]"`, train on the fixture, metrics check, `select_model`, `export_artifacts`, same job-level env (fixture CSV, temp SQLite MLflow DB, `ci-models`). The four ML `run:` steps are byte-identical to CI (checked by comparing the parsed YAML). Then:
+  1. **Build** (plain `docker build`): image name `ghcr.io/<repo>-service` with the repo lowercased in shell (`tr`), tag = full commit SHA (no `latest`); exported as `IMAGE` via `$GITHUB_ENV`. Labels: `org.opencontainers.image.source` (`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY`), `org.opencontainers.image.revision` (SHA), `org.opencontainers.image.description` (states the model was trained on the CI fixture, not the real dataset).
+  2. **Container smoke test:** same script as CI (name `hotel-price-cd`, image `$IMAGE`): bounded `/readyz` loop (30 × 2 s), one valid `/predict` needing a finite float, one invalid request needing a 4xx, logs printed on failure, container always removed.
+  3. **Push to GHCR:** `docker login ghcr.io -u $GITHUB_ACTOR --password-stdin` with `GITHUB_TOKEN`, `docker push "$IMAGE"`, prints `Published image: <ref>` and writes the reference, the fixture-model note, `docker pull` and `docker run` to `$GITHUB_STEP_SUMMARY`. It comes after the smoke test, so a failed verification stops the job before any push. No `docker/*` actions are used.
+- **Image reference:** `ghcr.io/pushpendra-paswan/hotelprice-service:<full commit SHA>` (the owner/repo part comes from `github.repository`, lowercased). Package visibility is not touched by the workflow: new GHCR packages are private, so pulling needs `docker login ghcr.io` with a token that has `read:packages`, unless someone makes the package public by hand.
+- **Pull and run** (deployment stays local and manual):
+  ```bash
+  echo "$GHCR_TOKEN" | docker login ghcr.io -u <github-username> --password-stdin
+  docker pull ghcr.io/pushpendra-paswan/hotelprice-service:<commit-sha>
+  docker run --rm -p 3000:3000 ghcr.io/pushpendra-paswan/hotelprice-service:<commit-sha>
+  ```
+- **Fixture-model limitation:** the real dataset is DVC-managed with a local remote and is not reachable from GitHub runners, so the delivered image holds a model trained on the 300-row fixture (MAE about 479 locally). It proves the delivery pipeline (build, verify, tag, publish) but is **not the production-quality model**. Real delivery would need the real dataset available to CI (for example a cloud DVC remote), out of scope for Version 1. The image label and job summary say so.
+- **README:** new "Continuous delivery (GitHub Actions)" section (when it runs, naming/tagging, labels, limitation, pull/run, private-by-default note); the repository-structure line lists `cd.yml`.
+- Not added: cloud deployment, Kubernetes, other registries, semver tags, GitHub Releases, signing, scanners, notifications, schedules, environment approval gates. Training, MLflow, DVC, BentoML, Docker and CI behavior are unchanged.
+
 ## Architecture
 
 Target pipeline (built up across milestones):
@@ -117,7 +138,7 @@ Target pipeline (built up across milestones):
 Dataset → DVC → Data/Feature Pipeline → Training → MLflow Tracking
         → MLflow Model Registry → BentoML → Docker → Local Serving
 
-Git → GitHub → GitHub Actions (CI implemented in 5.1: tests + quality, ML validation on a fixture, Docker build + smoke test; CD in 5.2)
+Git → GitHub → GitHub Actions (CI in 5.1: tests + quality, ML validation on a fixture, Docker build + smoke test; CD in 5.2: after CI passes on main, rebuild on the fixture, smoke test, push SHA-tagged image to ghcr.io)
 ```
 
 Implemented so far (through Docker): Dataset → DVC → Data/Feature Pipeline (`run_data_pipeline`) → Training (`run_training`) → MLflow Tracking + Model Registry (inside `run_training`; `select_model` sets the alias), wired together by the DVC `train` stage, then BentoML (`service.py`) loading the champion from the registry. Data flow:
@@ -164,6 +185,7 @@ models:/<name>@champion → export_artifacts → serving_artifacts/{model.json, 
 ├── tests/conftest.py        # shared small-sample CSV fixture
 ├── tests/fixtures/hotel_sample.csv  # 300-row sample of the real dataset (same schema), used by CI
 ├── .github/workflows/ci.yml # CI: `test` and `ml-validation-and-docker` jobs
+├── .github/workflows/cd.yml # CD: `deliver` job (after CI on main): build, smoke test, push to ghcr.io
 ├── .env.example             # optional HOTELPRICE_* overrides (incl. MLflow) with defaults
 ├── pyproject.toml           # dependencies, pytest and ruff config
 ├── README.md
@@ -269,6 +291,10 @@ docker run --rm -p 3000:3000 hotel-price-service:local   # same /predict, /livez
 # CI checks, run locally (no real dataset needed; see README "Continuous integration")
 ruff check . && ruff format --check . && pytest
 HOTELPRICE_DATA_PATH=tests/fixtures/hotel_sample.csv HOTELPRICE_MODEL_DIR=$PWD/ci-models python -m hotelprice.train   # in a scratch clone: writes mlflow.db
+
+# CD (runs on GitHub after CI passes on main; pull a delivered image, needs `docker login ghcr.io` with read:packages)
+docker pull ghcr.io/pushpendra-paswan/hotelprice-service:<commit-sha>
+docker run --rm -p 3000:3000 ghcr.io/pushpendra-paswan/hotelprice-service:<commit-sha>
 
 # Optional overrides
 HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED=1 HOTELPRICE_PREPROCESSOR_PATH=/tmp/p.joblib python -m hotelprice.data_pipeline
@@ -379,6 +405,18 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - The workflow has **not run on GitHub Actions** (nothing has been pushed). Unverified there: runner-specific behavior (`ubuntu-latest` toolchain, Docker and curl versions, port 3000 being free), pip caching (`cache-dependency-path: pyproject.toml`), `setup-python` 3.12 availability, the concurrency cancel, the fork behavior, total run time and the CI badge (it shows "no status" until a first run).
 - The local Docker build reused cached layers (the pip layer was already built); a cold `docker build` on a runner was not timed and will download the dependencies.
 
+## Verification Results (Milestone 5.2)
+
+**Verified locally**
+- `ruff check .` and `ruff format --check .` clean; `pytest`: **26 passed** (115 s); `dvc status`: up to date. No Python, training, MLflow, DVC, BentoML or Docker file changed.
+- `cd.yml` and `ci.yml` parse with PyYAML (`actionlint` and `yamllint` are not installed, so they were not run): triggers `workflow_run` (CI, completed, `main`) + `workflow_dispatch`; permissions `contents: read`, `packages: write`; concurrency `cd`; the job `if` and 40 min timeout are as designed. The four ML steps are identical to the CI job's.
+- **Fresh-clone reproduction** (temp `git clone` of `main`, the new workflow files copied in, brand-new venv, no `data/dataset.csv`, `mlflow.db`, `models/` or `serving_artifacts/`, no DVC remote). A scratchpad runner script (not in the repo) read `cd.yml` and executed each `run:` step literally with `bash -e`, applying the job env and emulating `$GITHUB_ENV`, with `GITHUB_REPOSITORY=Pushpendra-Paswan/HotelPrice` to test the lowercasing and `COMMIT_SHA` = the clone's HEAD (`86e82312841b…`): install, train on the fixture (MAE 478.92, RMSE 586.10, R² 0.9690), metrics check, `select_model`, `export_artifacts`, build, smoke test (prediction 6693.15, invalid request 400, container removed) all passed. Image built as `ghcr.io/pushpendra-paswan/hotelprice-service:86e82312841bdd9cfed9562574a0f303cd8123b7`; `docker inspect` showed the three labels with the expected values (source `https://github.com/Pushpendra-Paswan/HotelPrice`, revision = the SHA, fixture description).
+- **Push/pull mechanics against a temporary local registry** (`registry:2` on `localhost:5000`): the image was re-tagged to `localhost:5000/...:<sha>` and the workflow's actual "Push image" step text was run with only the `docker login` line removed and `IMAGE` pointing at the local registry. The push succeeded, `$GITHUB_STEP_SUMMARY` contained the image reference, the fixture note and the `docker pull` / `docker run` commands. The local image was then removed, pulled back from the registry, and run: `/predict` returned `6693.15478515625`, `model_version` "1", the same value as in the smoke test. The registry container, the pulled containers, the `registry:2` image and the temp clone/venv were removed afterwards.
+
+**Not verified: can only be verified on GitHub**
+- The workflow has **not run on GitHub Actions**, and **nothing was pushed to ghcr.io** (nothing has been pushed to GitHub at all). Unverified there: that GitHub accepts the workflow file, the `workflow_run` trigger and its `head_sha` checkout, the job `if` expression (including `workflow_run.event == 'push'`), skipping when CI fails or comes from a PR, the `GITHUB_TOKEN` login and `packages: write` permission to create the package, the `ghcr.io` push itself, that the package gets linked to the repository through the source label, the concurrency queueing, the job summary rendering, `ubuntu-latest` behavior and total run time. The `docker login` line itself was never exercised.
+- **First-run caveat:** a `workflow_run` workflow only triggers once its file exists on the default branch, so the first delivery happens after `cd.yml` is on `main` and CI passes there. The package will be private until someone changes its visibility.
+
 ## Known Issues / Limitations
 
 - Dependencies are not pinned to exact versions, so future installs may resolve newer versions.
@@ -407,14 +445,28 @@ HOTELPRICE_DATA_PATH=path/to.csv HOTELPRICE_TEST_SIZE=0.3 HOTELPRICE_RANDOM_SEED
 - The image is about 787 MB (scipy, pandas, sklearn, numpy dominate); no image scanning or multi-stage build was done.
 - `export_artifacts.py`, like `select_model.py`, runs on import and is meant to be run as a script only.
 - `bentoml serve` prints MLflow INFO lines and the agent hint at startup; the test run shows Pydantic/starlette deprecation warnings from BentoML internals.
+- **Neither CI nor CD has run on GitHub yet** (see Verification 5.1 and 5.2); nothing has been pushed to ghcr.io.
+- **The delivered image is not the real model:** it holds a model trained on the 300-row CI fixture (see 5.2). Only the CI/CD path is proven, not model quality.
+- CD repeats the CI ML-validation steps by copy (no shared workflow, by design), so `ci.yml` and `cd.yml` must be edited together. CD does not re-run tests or lint; it relies on the CI conclusion. Images are tagged only with the commit SHA (no `latest`, no semver), old images are never cleaned up, and package visibility is private by default.
 - **CI has not run on GitHub yet** (see Verification 5.1). CI runs on a 300-row fixture, so its metrics (MAE about 479) differ from the real-dataset metrics and prove the pipeline works, not model quality; the finite-metrics check has no quality threshold.
 - CI installs the full project (`pip install -e ".[dev]"`, including DVC, MLflow and BentoML) twice, once per job, so runs are slow (tests about 2 min locally, plus install time). Docker layers are not cached between runs.
 - The fixture must be regenerated by hand if the dataset schema changes; `test_dataset_schema` (skipped in CI) and `test_fixture_schema` are the checks that they stay in step.
 - `ci-models/` (job env `HOTELPRICE_MODEL_DIR`) is not git-ignored; it only exists on the runner or in a scratch clone.
 - Tests use `HotelPriceService.inner()` to get the plain class; this is BentoML SDK behavior that could change between versions.
 
-## Next Milestone
+## Version 1 Completion Checklist
 
-**5.2 GitHub Actions CD** (versioned Docker image tagged with the Git commit SHA).
+Compared with "Version 1 Done When" in CLAUDE.md. Locally verified means run on this machine; GitHub items cannot be checked until the repository is pushed.
 
-**Note for 5.2:** the CD workflow needs `serving_artifacts/` before `docker build`, and a checkout has none (it is git-ignored; the real `mlflow.db`, `models/` and dataset are not in Git either). It must rebuild `serving_artifacts/` **the same way CI does** (fixture CSV via `HOTELPRICE_DATA_PATH`, temporary SQLite MLflow store, `python -m hotelprice.train` → `select_model` → `export_artifacts`) and should reuse the same steps rather than diverge from them, so the published image is built the way CI validated it (only the tag changes, `:<commit SHA>` instead of `:ci`). Decide in 5.2 whether the published image should carry a fixture-trained model or a real one; the latter would need the real dataset (DVC) which CI deliberately avoids. Do not publish from pull requests or forks.
+| Criterion | Status |
+|-----------|--------|
+| Dataset → DVC | Done, verified locally (local remote, `dvc repro`, `dvc pull` in a clean clone) |
+| Data/feature pipeline → Training | Done, verified locally (26 tests pass) |
+| MLflow tracking and Model Registry (`champion` alias) | Done, verified locally |
+| BentoML serving from the registry | Done, verified locally (served predictions equal direct model predictions) |
+| Docker image, local inference | Done, verified locally (build, run, `/predict`, invalid request → 400) |
+| GitHub Actions: tests, quality, ML validation, Docker build (CI) | Written; every step reproduced locally in a fresh clone; **not yet run on GitHub** |
+| GitHub Actions: versioned image build and publish (CD) | Written; steps, tagging, labels and push/pull reproduced locally (temporary local registry); **not yet run on GitHub, nothing pushed to ghcr.io** |
+| Another developer can reproduce everything from the repository instructions | README documents setup, DVC remote, training, registry, serving, Docker, CI and CD; verified by clean-clone reproductions. The real dataset only reaches others through a copy of the DVC remote directory (no cloud remote in V1) |
+
+**Still to do to close Version 1 (outside this milestone):** push to GitHub, confirm CI is green, confirm CD publishes `ghcr.io/pushpendra-paswan/hotelprice-service:<sha>`, pull it with a `read:packages` token and run it, and check the CI badge. Known gap: the delivered image contains a fixture-trained model (see Known Issues).

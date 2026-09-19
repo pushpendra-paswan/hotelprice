@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # No DVC, real dataset or remote: training uses the small fixture CSV and a throwaway MLflow store.
+    # The ML steps and smoke test here must stay in sync with the `deliver` job in cd.yml.
     env:
       HOTELPRICE_DATA_PATH: tests/fixtures/hotel_sample.csv
       HOTELPRICE_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db

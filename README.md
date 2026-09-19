@@ -46,7 +46,7 @@ Only the ML libraries, DVC, MLflow, pytest and Ruff (dev) are installed at this 
 ├── pipelines/           # ML pipeline entry points (training, evaluation)
 ├── config/              # Configuration files
 ├── tests/               # pytest tests; tests/fixtures/hotel_sample.csv is the small dataset used by CI
-├── .github/workflows/   # GitHub Actions CI (ci.yml)
+├── .github/workflows/   # GitHub Actions CI (ci.yml) and CD (cd.yml)
 ├── Dockerfile, .dockerignore, requirements-serving.txt   # serving image (needs serving_artifacts/)
 ├── dvc.yaml             # DVC pipeline (train stage); dvc.lock pins its inputs/outputs
 ├── .env.example         # Configurable environment variables (all optional)
@@ -269,6 +269,30 @@ docker build -t hotel-price-service:ci .
 ```
 
 Note that this writes to `mlflow.db`, `mlartifacts/` and `serving_artifacts/` in the working directory, so run it in a scratch clone if you already have your own MLflow runs. The container smoke test is the last step of the workflow file; run the container as in the Docker section and call `/predict` with a fixture row.
+
+### Continuous delivery (GitHub Actions)
+
+`.github/workflows/cd.yml` publishes a versioned Docker image to the GitHub Container Registry (`ghcr.io`). It runs only after the **CI** workflow completes successfully for a push to `main` (it checks out the exact commit CI validated), and can also be started manually from the Actions tab on `main`. It never runs for pull requests or forks. It uses only the built-in `GITHUB_TOKEN` (`contents: read`, `packages: write`), so there are no secrets to set up. Two deliveries never run at the same time.
+
+The `deliver` job repeats the CI ML validation steps (train on the fixture, set the champion, export `serving_artifacts/`; keep `ci.yml` and `cd.yml` in sync), builds the image, runs the same container smoke test as CI, and only then logs in and pushes. If the smoke test fails, nothing is published. The image reference and the pull/run commands are printed at the end of the job and written to the job summary.
+
+- **Image name:** `ghcr.io/<owner>/<repo>-service`, lowercased (for this repository: `ghcr.io/pushpendra-paswan/hotelprice-service`).
+- **Tag:** the full Git commit SHA. There is no `latest` tag.
+- **Labels:** `org.opencontainers.image.source` (links the package to this repository), `org.opencontainers.image.revision` (the commit SHA) and `org.opencontainers.image.description` (says the model was trained on the CI fixture).
+
+> **Limitation:** the real dataset is DVC-managed with a local remote and is not available to GitHub runners, so the delivered image contains a model trained on the small CI fixture (300 rows). It proves the delivery pipeline works and produces a runnable, versioned, verified image, but it is **not the production-quality model**. Delivering a real model would need the real dataset to be reachable from CI (for example a cloud DVC remote), which is out of scope for Version 1.
+
+Pull and run a delivered image locally (deployment stays manual):
+
+```bash
+# New GHCR packages are private by default: log in with a token that has read:packages
+echo "$GHCR_TOKEN" | docker login ghcr.io -u <your-github-username> --password-stdin
+
+docker pull ghcr.io/pushpendra-paswan/hotelprice-service:<commit-sha>
+docker run --rm -p 3000:3000 ghcr.io/pushpendra-paswan/hotelprice-service:<commit-sha>
+```
+
+Login is not needed if you change the package visibility to public yourself (GitHub, package settings); the workflow never changes visibility. Then use `/predict`, `/livez` and `/readyz` on port 3000 as in the Docker section.
 
 ### Configuration
 
