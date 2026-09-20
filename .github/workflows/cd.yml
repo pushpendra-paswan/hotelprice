@@ -24,7 +24,7 @@ jobs:
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     # The ML steps below must stay in sync with the `ml-validation-and-docker` job in ci.yml, so the
     # published image is built exactly the way CI validated it.
@@ -36,10 +36,10 @@ jobs:
       # The exact commit CI validated (a manual run uses the commit it was started on).
       COMMIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.COMMIT_SHA }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip

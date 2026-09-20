@@ -14,11 +14,11 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -34,7 +34,7 @@ jobs:
 
   ml-validation-and-docker:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # No DVC, real dataset or remote: training uses the small fixture CSV and a throwaway MLflow store.
     # The ML steps and smoke test here must stay in sync with the `deliver` job in cd.yml.
@@ -43,8 +43,8 @@ jobs:
       HOTELPRICE_MLFLOW_TRACKING_URI: sqlite:///${{ github.workspace }}/mlflow.db
       HOTELPRICE_MODEL_DIR: ${{ github.workspace }}/ci-models
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
